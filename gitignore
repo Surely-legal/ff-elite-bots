@@ -1,0 +1,17 @@
+# Trade ledger (contains personal paper trade history)
+paper_ledger.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
