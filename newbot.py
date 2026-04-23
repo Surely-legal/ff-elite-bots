@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FF ELITE BOTS v4  --  8 Markets  --  4 Index Pairs  --  Auto-Save
+FF ELITE BOTS v5  --  8 Markets  --  4 Index Pairs  --  Auto-Save
 ===================================================================
   python run.py   (Windows CMD, PowerShell, Mac, Linux -- no pip needed)
 
   Markets: ES/MES  NQ/MNQ  YM/MYM  RTY/M2K
   Strategies: 17 session-aware bots (Asia / London / NY)
   Data: Yahoo Finance v8 OHLC + v7 quotes  ->  Stooq fallback
-  State: auto-saved every 30 min -> ff_bots_state_v4.json
+  State: auto-saved every 30 min -> ff_bots_state_v5.json
+
+  v5 additions over v4:
+  - Apex AI sessionTally restored (per-session W/L tally, persists across interval changes)
+  - getLiveStratIds() filter: Apex only learns from non-suspended strategies
+  - _aiTallyAdd() wired into bar-loop and live-exit closes for adaptiveBot
+  - adaptiveBot._barClosedCodes properly initialized and reset each processBots cycle
+  - Save file: ff_bots_state_v5.json (fully isolated from v3/v4 saves)
 """
 
 import sys, io as _io
@@ -26,7 +33,7 @@ PORT  = 7432
 CODES = ("ES","MES","NQ","MNQ","YM","MYM","RTY","M2K")
 
 # ── AUTO-SAVE ────────────────────────────────────────────────────────────────
-STATE_FILE     = "ff_bots_state_v4.json"
+STATE_FILE     = "ff_bots_state_v5.json"
 AUTOSAVE_EVERY = 30 * 60   # seconds
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -195,7 +202,7 @@ def _save_state_to_disk(data):
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, separators=(",", ":"))
         os.replace(tmp, STATE_FILE)
-        _safe(f"  [SAVE] State saved → {STATE_FILE}  ({len(json.dumps(data))//1024} KB)")
+        _safe(f"  [SAVE] State saved -> {STATE_FILE}  ({len(json.dumps(data))//1024} KB)")
     except Exception as e:
         _safe(f"  [--] Auto-save failed: {e}")
 
@@ -220,7 +227,7 @@ HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>FF Elite Bots v4</title>
+<title>FF Elite Bots v5</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@700;900&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
@@ -235,8 +242,6 @@ HTML = r"""<!DOCTYPE html>
 html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--tx);
   font-family:'Share Tech Mono',monospace;font-size:11px}
 #app{display:flex;flex-direction:column;height:100vh;overflow:hidden}
-
-/* ── TOP BAR ── */
 #top{display:flex;align-items:center;height:46px;flex-shrink:0;padding:0 10px;
   background:var(--p1);border-bottom:1px solid var(--b2);gap:0;overflow:hidden}
 #logo{font-family:'Orbitron',sans-serif;font-size:11px;font-weight:900;color:var(--cy);
@@ -253,23 +258,16 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--tx);
 .ivb.on{background:var(--cy);color:#fff;border-color:var(--cy)}
 .ts{color:var(--tx3);font-size:8.5px;margin-right:8px;white-space:nowrap}.ts b{color:var(--tx)}
 .sp{flex:1}
-
 #tu{font-size:7.5px;color:var(--tx3);margin-left:8px;white-space:nowrap}
 #qtag{font-size:7px;color:var(--tx3);margin-left:5px;padding:2px 5px;
   border-radius:2px;background:var(--b1);white-space:nowrap}
-
-/* Session chips */
 .sess-chip{padding:2px 6px;border-radius:3px;font-size:7px;font-weight:700;
   letter-spacing:1px;color:var(--tx3);background:var(--b1);border:1px solid transparent;transition:all .3s}
 #sess-asia.active{color:#8080ff;background:#8080ff18;border-color:#8080ff50}
 #sess-london.active{color:#f09030;background:#f0903018;border-color:#f0903050}
 #sess-ny.active{color:#18c860;background:#18c86018;border-color:#18c86050}
 #sess-sydney.active{color:#ffd700;background:#ffd70018;border-color:#ffd70050}
-
-/* ── BODY ── */
 #body{display:flex;flex:1;overflow:hidden;min-height:0}
-
-/* LEFT */
 #left{width:232px;min-width:232px;flex-shrink:0;background:var(--p1);
   border-right:1px solid var(--b2);display:flex;flex-direction:column;overflow:hidden}
 .ph{font-size:7.5px;font-weight:700;letter-spacing:1.5px;color:var(--tx3);
@@ -282,8 +280,6 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--tx);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:2px}
 #btype{color:var(--tx3);font-size:7.5px;margin-bottom:4px}
 svg#spark{display:block;width:100%;height:22px;margin-top:4px;overflow:hidden}
-
-/* Open positions - best bot only */
 #openbox{flex-shrink:0;overflow-y:auto;flex:1;border-bottom:1px solid var(--b2)}
 .pos-card{border-bottom:1px solid var(--b1);padding:6px 9px 5px}
 .pos-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
@@ -303,11 +299,8 @@ svg#spark{display:block;width:100%;height:22px;margin-top:4px;overflow:hidden}
 .pos-footer{display:flex;justify-content:space-between;align-items:center}
 .pos-unr{font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700}
 .pos-meta{font-size:6.5px;color:var(--tx3);text-align:right;line-height:1.5}
-
 #stratbox{flex-shrink:0;padding:6px 10px;font-size:8.5px;line-height:1.8;border-bottom:1px solid var(--b2)}
 #ai-panel-left{flex-shrink:0;overflow-y:auto;max-height:200px;border-bottom:1px solid var(--b2)}
-
-/* CENTER */
 #center{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
 #cgrid{display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:1fr 1fr;
   flex:1;gap:1px;padding:1px;background:var(--b1);min-height:0;overflow:hidden}
@@ -327,8 +320,6 @@ svg#spark{display:block;width:100%;height:22px;margin-top:4px;overflow:hidden}
 .cs{background:#ef535018;color:var(--dn);border:1px solid #ef535030}
 #tradepane{height:130px;flex-shrink:0;display:flex;flex-direction:column;border-top:1px solid var(--b2)}
 .tscroll{flex:1;overflow-y:auto}
-
-/* RIGHT */
 #right{width:196px;min-width:196px;flex-shrink:0;background:var(--p1);
   border-left:1px solid var(--b2);display:flex;flex-direction:column;overflow:hidden}
 #blist{flex:1;overflow-y:auto}
@@ -338,8 +329,6 @@ svg#spark{display:block;width:100%;height:22px;margin-top:4px;overflow:hidden}
 .bbar{flex:1;height:2px;background:var(--b2);border-radius:1px}
 .bfill{height:100%;border-radius:1px;transition:width .8s}
 .rsect{flex-shrink:0;padding:5px 9px;border-top:1px solid var(--b2);font-size:8px;line-height:1.9;color:var(--tx3)}
-
-/* LOG */
 #log{height:30px;flex-shrink:0;background:var(--p3);border-top:1px solid var(--b2);
   overflow-x:auto;overflow-y:hidden;display:flex;align-items:center;padding:0 8px;gap:4px;white-space:nowrap}
 .lc{display:inline-flex;align-items:center;padding:1px 7px;border-radius:2px;
@@ -358,8 +347,6 @@ table.mt td{font-size:8px;padding:2px 4px;border-bottom:1px solid var(--b1);whit
 table.mt tr:hover td{background:var(--p2)}
 ::-webkit-scrollbar{width:3px;height:3px}::-webkit-scrollbar-track{background:var(--bg)}
 ::-webkit-scrollbar-thumb{background:var(--b2);border-radius:2px}
-
-/* ── HOVER TOOLTIP ── */
 #chart-tooltip{position:fixed;pointer-events:none;z-index:100;display:none;
   background:#1e222d;border:1px solid #363a45;border-radius:4px;
   padding:7px 10px;font-family:'Share Tech Mono',monospace;font-size:8px;
@@ -368,8 +355,6 @@ table.mt tr:hover td{background:var(--p2)}
   margin-bottom:3px;padding-bottom:3px;border-bottom:1px solid var(--b1);}
 #chart-tooltip .tt-row{display:flex;justify-content:space-between;gap:12px;}
 #chart-tooltip .tt-k{color:var(--tx3);}
-
-/* ── FULLSCREEN OVERLAY ── */
 #fs-overlay{display:none;position:fixed;inset:0;z-index:200;background:#131722;
   flex-direction:column;}
 #fs-overlay.open{display:flex;}
@@ -407,8 +392,6 @@ table.mt tr:hover td{background:var(--p2)}
 .fs-pos-lv-val{font-family:'Orbitron',sans-serif;font-size:9px;font-weight:700;line-height:1.2;}
 .fs-pos-unr{font-family:'Orbitron',sans-serif;font-size:11px;font-weight:700;text-align:center;}
 .fs-pos-meta{display:flex;justify-content:space-between;font-size:6px;color:var(--tx3);}
-
-/* ── STRATEGY MODAL ── */
 #strat-modal{display:none;position:fixed;inset:0;z-index:300;
   background:#00000090;align-items:center;justify-content:center;}
 #strat-modal.open{display:flex;}
@@ -473,7 +456,7 @@ table.mt tr:hover td{background:var(--p2)}
     </div>
     <div id="openbox"><div style="padding:8px 10px;color:var(--tx3);font-size:8.5px">Waiting for signals...</div></div>
     <div class="ph" style="border-top:1px solid var(--b2)">
-      <span style="color:#7eb8ff">⬡ APEX AI</span>
+      <span style="color:#7eb8ff">&#x2B21; APEX AI</span>
       <span id="ai-wr-badge" style="font-size:6.5px;color:var(--tx3);font-weight:normal;text-transform:none;letter-spacing:0"></span>
     </div>
     <div id="ai-panel-left"><div style="padding:8px 10px;color:var(--tx3);font-size:8px">Learning... needs WR&gt;50% strategy per session</div></div>
@@ -519,13 +502,11 @@ table.mt tr:hover td{background:var(--p2)}
     <div class="rsect" style="font-size:7.5px">WR &lt;25% after 20 &rarr; suspended<br>Revives fresh at each new session<br>No wave spawning &mdash; all 17 run always</div>
   </div>
 </div>
-<div id="log"><span class="lc info">FF Elite Bots v4 &mdash; 8 markets &mdash; 4 index pairs &mdash; 17 session-aware strategies</span></div>
+<div id="log"><span class="lc info">FF Elite Bots v5 &mdash; 8 markets &mdash; 4 index pairs &mdash; 17 session-aware strategies</span></div>
 </div>
 
-<!-- ── HOVER TOOLTIP ── -->
 <div id="chart-tooltip"></div>
 
-<!-- ── FULLSCREEN CHART OVERLAY ── -->
 <div id="fs-overlay">
   <div id="fs-header">
     <div id="fs-meta">
@@ -533,13 +514,12 @@ table.mt tr:hover td{background:var(--p2)}
       <span id="fs-price">--</span>
       <span id="fs-chg"></span>
     </div>
-    <span id="fs-close">✕ &nbsp;ESC</span>
+    <span id="fs-close">&#x2715; &nbsp;ESC</span>
   </div>
   <div id="fs-canvas-wrap"></div>
   <div id="fs-positions"></div>
 </div>
 
-<!-- ── STRATEGY TRADES MODAL ── -->
 <div id="strat-modal">
   <div id="strat-modal-inner">
     <div id="strat-modal-header">
@@ -547,7 +527,7 @@ table.mt tr:hover td{background:var(--p2)}
         <div id="strat-modal-title"></div>
         <div id="strat-modal-sub"></div>
       </div>
-      <span id="strat-modal-close">✕</span>
+      <span id="strat-modal-close">&#x2715;</span>
     </div>
     <div id="strat-modal-stats"></div>
     <div id="strat-modal-body">
@@ -560,14 +540,14 @@ table.mt tr:hover td{background:var(--p2)}
 
 <script>
 const MKTS=[
-  {id:"NQ", code:"NQ", name:"E-Mini Nasdaq-100",   ptVal:20,  tick:0.25, col:"#ff9800", pair:"NDX", tier:1, conf:1.00, tierLabel:"T1·MAX"},
-  {id:"MNQ",code:"MNQ",name:"Micro E-Mini NQ",     ptVal:2,   tick:0.25, col:"#ffb74d", pair:"NDX", tier:1, conf:1.00, tierLabel:"T1·MAX"},
-  {id:"ES", code:"ES", name:"E-Mini S&P 500",      ptVal:50,  tick:0.25, col:"#2962ff", pair:"SPX", tier:2, conf:0.85, tierLabel:"T2·HIGH"},
-  {id:"MES",code:"MES",name:"Micro E-Mini S&P",    ptVal:5,   tick:0.25, col:"#5585ff", pair:"SPX", tier:2, conf:0.85, tierLabel:"T2·HIGH"},
-  {id:"YM", code:"YM", name:"E-Mini Dow Jones",    ptVal:5,   tick:1.00, col:"#00bfa5", pair:"DJI", tier:3, conf:0.65, tierLabel:"T3·MOD"},
-  {id:"MYM",code:"MYM",name:"Micro E-Mini Dow",    ptVal:0.5, tick:1.00, col:"#4dd0c4", pair:"DJI", tier:3, conf:0.65, tierLabel:"T3·MOD"},
-  {id:"RTY",code:"RTY",name:"E-Mini Russell 2000",  ptVal:50,  tick:0.10, col:"#e91e63", pair:"RUT", tier:4, conf:0.45, tierLabel:"T4·LOW"},
-  {id:"M2K",code:"M2K",name:"Micro E-Mini Russell", ptVal:5,   tick:0.10, col:"#f06292", pair:"RUT", tier:4, conf:0.45, tierLabel:"T4·LOW"},
+  {id:"NQ", code:"NQ", name:"E-Mini Nasdaq-100",   ptVal:20,  tick:0.25, col:"#ff9800", pair:"NDX", tier:1, conf:1.00, tierLabel:"T1\u00b7MAX"},
+  {id:"MNQ",code:"MNQ",name:"Micro E-Mini NQ",     ptVal:2,   tick:0.25, col:"#ffb74d", pair:"NDX", tier:1, conf:1.00, tierLabel:"T1\u00b7MAX"},
+  {id:"ES", code:"ES", name:"E-Mini S&P 500",      ptVal:50,  tick:0.25, col:"#2962ff", pair:"SPX", tier:2, conf:0.85, tierLabel:"T2\u00b7HIGH"},
+  {id:"MES",code:"MES",name:"Micro E-Mini S&P",    ptVal:5,   tick:0.25, col:"#5585ff", pair:"SPX", tier:2, conf:0.85, tierLabel:"T2\u00b7HIGH"},
+  {id:"YM", code:"YM", name:"E-Mini Dow Jones",    ptVal:5,   tick:1.00, col:"#00bfa5", pair:"DJI", tier:3, conf:0.65, tierLabel:"T3\u00b7MOD"},
+  {id:"MYM",code:"MYM",name:"Micro E-Mini Dow",    ptVal:0.5, tick:1.00, col:"#4dd0c4", pair:"DJI", tier:3, conf:0.65, tierLabel:"T3\u00b7MOD"},
+  {id:"RTY",code:"RTY",name:"E-Mini Russell 2000",  ptVal:50,  tick:0.10, col:"#e91e63", pair:"RUT", tier:4, conf:0.45, tierLabel:"T4\u00b7LOW"},
+  {id:"M2K",code:"M2K",name:"Micro E-Mini Russell", ptVal:5,   tick:0.10, col:"#f06292", pair:"RUT", tier:4, conf:0.45, tierLabel:"T4\u00b7LOW"},
 ];
 const snap=(p,tick)=>Math.round(p/tick)*tick;
 let candles={},liveQ={},sources={},prevPx={},dirty={};
@@ -630,26 +610,28 @@ function comboScore(p){
   const pnlScore=Math.max(0,Math.min(1,avgPnl/500));
   return wr*0.80+pnlScore*0.20;
 }
-function getBestCombo(code,sess){
-  let best=null;
-  STRATS.forEach(s=>{
-    const k=`${s.id}|${sess}|${code}`;
-    const p=perfMatrix[k];
-    if(!p)return;
-    const n=p.w+p.l; if(n<3)return;
-    const sc=comboScore(p);
-    const wr=p.w/n;
-    if(!best||sc>best.sc)best={stratId:s.id,strat:s,wr,sc,n,pnl:p.pnl};
-  });
-  return best;
-}
 
-// ── Adaptive (AI) bot state ───────────────────────────────────
+// ── Adaptive (AI) bot state (v3 port) ─────────────────────────
+// _barClosedCodes: initialized here, reset each processBots cycle
+// sessionTally: persists across interval changes (not reset on iv switch)
 const adaptiveBot={
   uid:-1,name:"Apex AI",openTrades:{},closedTrades:[],wins:0,losses:0,
-  consecLosses:0,
-  apexPaused:false
+  _barClosedCodes:new Set(),
+  sessionTally:{NY:{w:0,l:0},LONDON:{w:0,l:0},ASIA:{w:0,l:0},SYDNEY:{w:0,l:0}}
 };
+
+// ── Only allow Apex to learn from non-suspended strategies ────
+function getLiveStratIds(){
+  return new Set(bots.filter(b=>!b.killed).map(b=>b.strat.id));
+}
+
+// ── Per-session tally helper for Apex AI ──────────────────────
+function _aiTallyAdd(sess,won){
+  const key=sess||"NY";
+  if(adaptiveBot.sessionTally[key]){
+    won?adaptiveBot.sessionTally[key].w++:adaptiveBot.sessionTally[key].l++;
+  }
+}
 
 let t1Consensus=null;
 
@@ -773,8 +755,11 @@ function sessScore(p){
   return wr*0.50+Math.max(0,Math.min(1,avgPnl/500))*0.30+Math.max(0,Math.min(1,bestW/1000))*0.20;
 }
 
+// ── v5: liveIds filter — only learn from non-suspended strats ──
 function getQualifiedStrats(sess,code){
+  const liveIds=getLiveStratIds();
   return STRATS.filter(s=>{
+    if(!liveIds.has(s.id))return false;
     const k=`${s.id}|${sess}|${code}`;
     const p=perfMatrix[k];
     if(!p)return false;
@@ -785,9 +770,12 @@ function getQualifiedStrats(sess,code){
 function aiSessionReady(sess){return MKTS.some(m=>getQualifiedStrats(sess,m.code).length>0);}
 function aiFullyUnlocked(){return["NY","LONDON","ASIA","SYDNEY"].filter(s=>aiSessionReady(s)).length>=2;}
 
+// ── getBestForSession (v3 port) ────────────────────────────────
 function getBestForSession(sess){
+  const liveIds=getLiveStratIds();
   let best=null;
   STRATS.forEach(s=>{
+    if(!liveIds.has(s.id))return;
     MKTS.forEach(m=>{
       const k=`${s.id}|${sess}|${m.code}`;
       const p=perfMatrix[k];
@@ -803,46 +791,30 @@ function getBestForSession(sess){
   return best;
 }
 
-const DECAY_HALF_LIFE_MS=48*60*60*1000;
-function decayedWins(trades){
-  const now=Date.now();
-  return trades.filter(t=>t.won).reduce((sum,t)=>{
-    const age=Math.max(0,now-t.ts);
-    return sum+Math.pow(0.5,age/DECAY_HALF_LIFE_MS);
-  },0);
-}
-
+// ── getDominantStrat (v3 port — simple, no min-trades/decay/pause) ──
 function getDominantStrat(sess){
+  const liveIds=getLiveStratIds();
   const totals={};
   STRATS.forEach(s=>{
+    if(!liveIds.has(s.id))return;
     MKTS.forEach(m=>{
       const k=`${s.id}|${sess}|${m.code}`;
       const p=perfMatrix[k];
-      if(!p||!p.trades||p.trades.length===0)return;
-      if(!totals[s.id])totals[s.id]={strat:s,w:0,l:0,pnl:0,bestWin:0,allTrades:[]};
+      if(!p||p.w===0)return;
+      if(!totals[s.id])totals[s.id]={strat:s,w:0,l:0,pnl:0,bestWin:0};
       totals[s.id].w   +=p.w;totals[s.id].l   +=p.l;totals[s.id].pnl +=p.pnl;
       if(p.bestWin>totals[s.id].bestWin)totals[s.id].bestWin=p.bestWin;
-      totals[s.id].allTrades.push(...p.trades);
     });
   });
-  let best=null,bestDecayW=0;
+  let best=null;
   Object.values(totals).forEach(t=>{
-    const n=t.w+t.l;if(n<10)return;
-    const wr=t.w/n;if(wr<=0.50||t.pnl<=0)return;
-    const dw=decayedWins(t.allTrades);
-    if(!best||dw>bestDecayW){best=t;bestDecayW=dw;}
+    const n=t.w+t.l; if(n===0)return;
+    const wr=t.w/n; if(wr<=0.50||t.pnl<=0)return;
+    if(!best||t.w>best.w)best=t;
   });
   if(!best)return null;
   const n=best.w+best.l,wr=best.w/n;
-  const dom={strat:best.strat,wins:best.w,decayedWins:Math.round(bestDecayW*10)/10,
-             n,wr,pnl:best.pnl,sc:sessScore(best)};
-  if(adaptiveBot.apexPaused){
-    const lastDom=adaptiveBot._lastDomId;
-    if(dom.strat.id!==lastDom){adaptiveBot.apexPaused=false;adaptiveBot.consecLosses=0;adaptiveBot._lastDomId=dom.strat.id;}
-    else return null;
-  }
-  adaptiveBot._lastDomId=dom.strat.id;
-  return dom;
+  return{strat:best.strat,wins:best.w,n,wr,pnl:best.pnl,sc:sessScore(best)};
 }
 
 function getAdaptiveSig(code,bars,sess,atrVal){
@@ -976,7 +948,7 @@ const STRATS=[
      return null;}},
   {id:"MACDWave",name:"MACD Wave",type:"MACD Hist Zero Cross",rr:2.0,atrMult:1.5,confirm:true,
    sess:{ASIA:"MACD",LONDON:"MACD",NY:"MACD"},
-   desc:"MACD histogram crosses zero. Universal — fires in all sessions.",
+   desc:"MACD histogram crosses zero. Universal -- fires in all sessions.",
    signal(b){
      if(b.length<35)return null;
      const c=b.map(x=>x.c),{hist}=macdArr(c),n=hist.length-1;
@@ -985,7 +957,7 @@ const STRATS=[
      return null;}},
   {id:"ATRChannel",name:"ATR Channel",type:"SMA+ATR Session",rr:2.5,atrMult:1.5,
    sess:{ASIA:"SMA20+1.5xATR",LONDON:"SMA20+2xATR",NY:"SMA20+2.5xATR"},
-   desc:"Break above/below SMA20 ± ATR channel. Channel widens from Asia to NY.",
+   desc:"Break above/below SMA20 +/- ATR channel. Channel widens from Asia to NY.",
    signal(b){
      if(b.length<30)return null;
      const sess=getSessionET(b[b.length-1].t),mult=sess==="ASIA"?1.5:sess==="LONDON"?2.0:2.5;
@@ -995,8 +967,8 @@ const STRATS=[
      if(c[n-1]>=sm[n-1]-mult*at[n-1]&&c[n]<sm[n]-mult*at[n])return"short";
      return null;}},
   {id:"CCIReversal",name:"CCI Reversal",type:"CCI Session",rr:2.0,atrMult:1.2,confirm:true,
-   sess:{ASIA:"CCI ±80",LONDON:"CCI ±100",NY:"CCI ±100"},
-   desc:"CCI crosses extreme. ±80 in tight Asia range, ±100 in London/NY.",
+   sess:{ASIA:"CCI \u00b180",LONDON:"CCI \u00b1100",NY:"CCI \u00b1100"},
+   desc:"CCI crosses extreme. +/-80 in tight Asia range, +/-100 in London/NY.",
    signal(b){
      if(b.length<20)return null;
      const sess=getSessionET(b[b.length-1].t),lev=sess==="ASIA"?80:100;
@@ -1074,7 +1046,7 @@ const STRATS=[
      return null;}},
   {id:"ParabolicSAR",name:"Parabolic SAR",type:"SAR Trend Reversal",rr:2.0,atrMult:1.5,confirm:true,
    sess:{ASIA:"SAR 0.02/0.2",LONDON:"SAR 0.02/0.2",NY:"SAR 0.02/0.2"},
-   desc:"Trades the dot flip — when SAR flips from above to below price (long) or below to above (short).",
+   desc:"Trades the dot flip -- when SAR flips from above to below price (long) or below to above (short).",
    signal(b){
      if(b.length<10)return null;
      const n=b.length-1,sar=sarArr(b,0.02,0.2);
@@ -1124,7 +1096,10 @@ const bestBot=()=>{const ab=live();return ab.length?ab.reduce((b,x)=>score(x)>sc
 
 function processBots(){
   if(!startupDone)return;
+  // ── v5: reset _barClosedCodes for all bots AND adaptiveBot ──
   bots.forEach(b=>{b._barClosedCodes=new Set();});
+  adaptiveBot._barClosedCodes=new Set();
+
   computeT1Consensus(bs("ES"),bs("NQ"));
   const orderedMkts=[...MKTS].sort((a,b)=>a.tier-b.tier);
 
@@ -1152,7 +1127,7 @@ function processBots(){
           bot.openTrades={};bot._sessWins=0;bot._sessLosses=0;
           revived.push(bot.name);
         });
-        if(revived.length)addLog(`Session ${sess} — ${revived.length} bots revived (new wave)`,"wave");
+        if(revived.length)addLog(`Session ${sess} \u2014 ${revived.length} bots revived (new wave)`,"wave");
       }
 
       const atr20slice=atr.slice(Math.max(0,i-19),i+1).filter(v=>v!=null);
@@ -1214,7 +1189,7 @@ function processBots(){
         }
       });
 
-      // Adaptive bot
+      // ── Adaptive bot: close existing position ──────────────────
       const at=adaptiveBot.openTrades[mkt.code];
       if(at){
         let closed=false,ex=0,won=false;
@@ -1232,20 +1207,22 @@ function processBots(){
           const pts=at.dir==="long"?ex-at.entry:at.entry-ex;
           const pnl=Math.round(pts*mkt.ptVal*100)/100;
           won?adaptiveBot.wins++:adaptiveBot.losses++;totalClosed++;
-          if(won){adaptiveBot.consecLosses=0;if(adaptiveBot.apexPaused)adaptiveBot.apexPaused=false;}
-          else{adaptiveBot.consecLosses++;if(adaptiveBot.consecLosses>=3){adaptiveBot.apexPaused=true;addLog("AI PAUSED — 3 consecutive losses, waiting for regime shift","kill");}}
           const rec={code:mkt.code,col:mkt.col,botName:"Apex AI",stratId:"ADAPTIVE",
             dir:at.dir,entry:at.entry,exitPx:ex,pts:Math.round(pts*100)/100,
             pnlUSD:pnl,won,sl:at.sl,tp:at.tp,openT:at.openT,closeT:bar.t,
             atr:at.atr,sess:at.sess,sessLabel:at.sessLabel||at.sess,conf:at.conf};
-          adaptiveBot.closedTrades=[...adaptiveBot.closedTrades,rec];
+          adaptiveBot.closedTrades=[...adaptiveBot.closedTrades.slice(-199),rec];
           allClosed=[rec,...allClosed].slice(0,5000);
           delete adaptiveBot.openTrades[mkt.code];
+          // ── v5: mark bar-closed and tally the session result ──
+          adaptiveBot._barClosedCodes.add(mkt.code);
           recordPerfAll("ADAPTIVE",at.openT,mkt.code,won,pnl);
+          _aiTallyAdd(at.sess,won);
           document.getElementById("tcl").textContent=totalClosed;
           addLog(`AI ${mkt.code} ${won?"WIN":"LOSS"} ${f$(pnl)} [${at.sessLabel||at.sess}] conf:${((at.conf||0)*100).toFixed(0)}%`,won?"win":"loss");
         }
       }else if(atr[i]!=null){
+        // ── Adaptive bot: enter new position ──────────────────────
         const aiHasPos=Object.keys(adaptiveBot.openTrades).length>0;
         if(!aiHasPos&&aiFullyUnlocked()){
           const res=getAdaptiveSig(mkt.code,b.slice(0,i+1),sess,atr[i]);
@@ -1283,7 +1260,7 @@ function processBots(){
         recordPerfAll(bot.strat.id,t.openT,code,won,pnl);
       });
       bot.openTrades={};bot.killed=true;bot.killReason="WR<25% (revives next session)";
-      addLog(`${bot.name} SUSPENDED (WR<25%) — revives at next session`,"kill");
+      addLog(`${bot.name} SUSPENDED (WR<25%) \u2014 revives at next session`,"kill");
     }
   });
   document.getElementById("ta").textContent=live().length;
@@ -1364,6 +1341,8 @@ function checkLiveExits(){
         allClosed=[rec,...allClosed].slice(0,5000);
         delete bot.openTrades[code];
         recordPerfAll(rec.stratId,t.openT,code,won,pnl);
+        // ── v5: tally session result for Apex AI live exits ──
+        if(isAI)_aiTallyAdd(t.sess,won);
         document.getElementById("tcl").textContent=totalClosed;
         const tag=isAI?"AI ":"";
         addLog(`${tag}${code} ${bot.name} ${won?"WIN":"LOSS"} ${f$(pnl)} [live]`,won?"win":"loss");
@@ -1433,7 +1412,7 @@ function buildGrid(){
           <span style="font-size:8px" id="cchg-${m.id}"></span>
           <span id="fs-btn-${m.id}" title="Expand fullscreen"
             style="cursor:pointer;color:var(--tx4);font-size:12px;line-height:1;padding:0 1px;
-            transition:color .15s;user-select:none">⤢</span>
+            transition:color .15s;user-select:none">&#x2922;</span>
         </div>
       </div>
       <div class="cw" id="cw-${m.id}"><canvas id="cv-${m.id}"></canvas></div>
@@ -1612,7 +1591,7 @@ function updateSessionClock(){
   if(isMaint)activeSess.push("BREAK");
   else{if(inNY)activeSess.push("NY");if(inLondon)activeSess.push("LON");if(inAsia)activeSess.push("ASIA");if(inSydney)activeSess.push("SYD");}
   if(!activeSess.length)activeSess.push("--");
-  const el=document.getElementById("sess-et");if(el)el.textContent=`ET ${dH}:${dM}${ampm} · ${activeSess.join("+")}`;
+  const el=document.getElementById("sess-et");if(el)el.textContent=`ET ${dH}:${dM}${ampm} \u00b7 ${activeSess.join("+")}`;
 }
 
 function rafLoop(){MKTS.forEach(m=>{if(dirty[m.id]){drawChart(m);dirty[m.id]=false;}});requestAnimationFrame(rafLoop);}
@@ -1660,14 +1639,14 @@ function renderFsPositions(){
   bar.innerHTML=trades.map(({bot,t,unr,isAI})=>{
     const sess=t.sessLabel||t.sess||"--",ss=SESS_STYLE[primarySess(sess)]||SESS_STYLE.NY;
     const slDist=Math.abs(t.entry-t.sl).toFixed(dec),tpDist=Math.abs(t.tp-t.entry).toFixed(dec);
-    const isLong=t.dir==="long",botLabel=isAI?"⬡ Apex AI":bot.name;
+    const isLong=t.dir==="long",botLabel=isAI?"\u2b21 Apex AI":bot.name;
     const stratLabel=isAI?(STRATS.find(s=>s.id===t.stratUsed)?.name||"dominant"):bot.strat.name;
     return`<div class="fs-pos-card ${isLong?"long-card":"short-card"}">
       <div class="fs-pos-top">
-        <span class="fs-pos-dir ${isLong?"long":"short"}">${isLong?"LONG ▲":"SHORT ▼"}</span>
+        <span class="fs-pos-dir ${isLong?"long":"short"}">${isLong?"LONG \u25b2":"SHORT \u25bc"}</span>
         <span style="font-size:6px;padding:1px 5px;border-radius:2px;color:${ss.col};background:${ss.bg};border:1px solid ${ss.border}">${sess}</span>
       </div>
-      <div class="fs-pos-bot">${botLabel} · ${stratLabel}</div>
+      <div class="fs-pos-bot">${botLabel} \u00b7 ${stratLabel}</div>
       <div class="fs-pos-levels">
         <div class="fs-pos-lv" style="border:1px solid #26a69a30"><div class="fs-pos-lv-lbl" style="color:#26a69a">TP</div><div class="fs-pos-lv-val" style="color:#26a69a">${t.tp.toFixed(dec)}</div><div style="font-size:5px;color:#26a69a60">+${tpDist}</div></div>
         <div class="fs-pos-lv" style="border:1px solid #d0e0ff20"><div class="fs-pos-lv-lbl" style="color:var(--tx2)">ENTRY</div><div class="fs-pos-lv-val" style="color:#dce8ff">${t.entry.toFixed(dec)}</div><div style="font-size:5px;color:var(--tx4)">${fTs(t.openT)}</div></div>
@@ -1692,7 +1671,7 @@ function openStratModal(bot){
   document.getElementById("strat-modal-title").textContent=bot.name;
   const tot=bot.wins+bot.losses,wr=tot?(bot.wins/tot*100).toFixed(1)+"%":"--";
   const pnl=bot.closedTrades.reduce((s,t)=>s+(t.pnlUSD||0),0),avgPnl=tot?pnl/tot:0;
-  document.getElementById("strat-modal-sub").textContent=`${bot.strat.type} · RR ${bot.strat.rr}:1 · Wave ${bot.wave}`;
+  document.getElementById("strat-modal-sub").textContent=`${bot.strat.type} \u00b7 RR ${bot.strat.rr}:1 \u00b7 Wave ${bot.wave}`;
   document.getElementById("strat-modal-stats").innerHTML=`
     <div class="sm-stat"><span>Trades</span><b style="color:var(--tx)">${tot}</b></div>
     <div class="sm-stat"><span>Win Rate</span><b style="color:${bot.wins/Math.max(tot,1)>=0.5?"#26a69a":"#ef5350"}">${wr}</b></div>
@@ -1711,7 +1690,7 @@ function openStratModal(bot){
         return`<tr style="background:${t.won?"#26a69a08":"#ef535008"}">
           <td><b style="color:${mkt?.col||"#fff"}">${t.code}</b></td>
           <td style="color:${ss2?.col||"var(--tx3)"};font-size:7px">${t.sessLabel||t.sess||"--"}</td>
-          <td style="color:${t.dir==="long"?"#26a69a80":"#ef535080"}">${t.dir==="long"?"▲ L":"▼ S"}</td>
+          <td style="color:${t.dir==="long"?"#26a69a80":"#ef535080"}">${t.dir==="long"?"\u25b2 L":"\u25bc S"}</td>
           <td style="color:var(--tx2)">${t.entry?.toFixed(dec)}</td>
           <td style="color:var(--tx2)">${(t.exitPx??t.ex)?.toFixed(dec)??"--"}</td>
           <td style="color:${clr(t.pts)}">${fPts(t.pts??0)}</td>
@@ -1789,9 +1768,9 @@ function renderLeft(){
                 <span class="pos-mkt" style="color:${mkt.col}">${mkt.code}</span>
                 <span class="pos-sess" style="color:${ss.col};background:${ss.bg};border:1px solid ${ss.border}">${sess}</span>
               </div>
-              <div class="pos-strat">${mkt.name} &middot; ${sigName}</div>
+              <div class="pos-strat">${mkt.name} \u00b7 ${sigName}</div>
             </div>
-            <span class="pos-dir ${t.dir}">${t.dir==="long"?"LONG ▲":"SHORT ▼"}</span>
+            <span class="pos-dir ${t.dir}">${t.dir==="long"?"LONG \u25b2":"SHORT \u25bc"}</span>
           </div>
           <div class="pos-levels">
             <div class="pos-lv" style="border:1px solid #26a69a30"><div class="pos-lv-label" style="color:#26a69a">TARGET</div><div class="pos-lv-val" style="color:#26a69a">${t.tp.toFixed(dec)}</div><div class="pos-lv-dist" style="color:#26a69a">+${tpDist}pt</div></div>
@@ -1799,7 +1778,7 @@ function renderLeft(){
             <div class="pos-lv" style="border:1px solid #ef535030"><div class="pos-lv-label" style="color:#ef5350">STOP</div><div class="pos-lv-val" style="color:#ef5350">${t.sl.toFixed(dec)}</div><div class="pos-lv-dist" style="color:#ef5350">-${slDist}pt</div></div>
           </div>
           <div class="pos-footer">
-            <div><div class="pos-unr" style="color:${clr(unr)}">${f$(unr)}</div><div style="font-size:6px;color:var(--tx3)">unrealized &middot; ATR ${t.atr?.toFixed(2)}</div></div>
+            <div><div class="pos-unr" style="color:${clr(unr)}">${f$(unr)}</div><div style="font-size:6px;color:var(--tx3)">unrealized \u00b7 ATR ${t.atr?.toFixed(2)}</div></div>
             <div class="pos-meta"><div style="color:var(--tx2)">RR ${bb.strat.rr}:1</div><div>Score ${(score(bb)*100).toFixed(0)}/100</div></div>
           </div>
         </div>`;}).join("")
@@ -1816,33 +1795,40 @@ function renderAILeft(){
   if(badge){
     const allAI=allClosed.filter(t=>t.botName==="Apex AI");
     const allAITot=allAI.length,allAIWins=allAI.filter(t=>t.won).length,allAIWR=allAITot?allAIWins/allAITot:0;
-    if(unlocked)badge.innerHTML=`<span style="color:#26a69a">● LIVE · ${allAITot>0?(allAIWR*100).toFixed(0)+"%WR · "+allAITot+"t":"watching"}</span>`;
-    else badge.innerHTML=`<span style="color:#f5a623">⧗ SCANNING · ${foundCount}/4 sessions · need 2</span>`;
+    if(unlocked)badge.innerHTML=`<span style="color:#26a69a">\u25cf LIVE \u00b7 ${allAITot>0?(allAIWR*100).toFixed(0)+"%WR \u00b7 "+allAITot+"t":"watching"}</span>`;
+    else badge.innerHTML=`<span style="color:#f5a623">\u29d7 SCANNING \u00b7 ${foundCount}/4 sessions \u00b7 need 2</span>`;
   }
   const aiTrades=Object.entries(ab.openTrades).map(([code,t])=>({code,t}));
+  // ── sessionTally shown per-row in sessRows (v3 port) ──────────
   const sessRows=["NY","LONDON","ASIA","SYDNEY"].map(sess=>{
     const sst=SESS_STYLE[sess]||SESS_STYLE.NY,isNow=sess===currSess;
-    const best=getBestForSession(sess),dom=getDominantStrat(sess),ready=best!==null,locked=ready&&dom===null;
-    return`<div style="display:flex;align-items:center;gap:4px;padding:2px 6px;border-bottom:1px solid var(--b1);${isNow?"background:"+sst.bg+"20;border-left:2px solid "+sst.col+";":""}>
-      <span style="font-size:8.5px;line-height:1;color:${ready?(locked?"#f5a623":"#26a69a"):"#4c525e"}">${ready?(locked?"◐":"✓"):"○"}</span>
+    const dom=getDominantStrat(sess),ready=dom!==null;
+    const tally=ab.sessionTally[sess]||{w:0,l:0};
+    const tallyTot=tally.w+tally.l;
+    const tallyCol=tallyTot===0?"var(--tx4)":tally.w/tallyTot>=0.5?"#26a69a":"#ef5350";
+    return`<div style="display:flex;align-items:center;gap:4px;padding:2px 6px;border-bottom:1px solid var(--b1);${isNow?"background:"+sst.bg+"20;border-left:2px solid "+sst.col+";":""}">
+      <span style="font-size:8.5px;line-height:1;color:${ready?"#26a69a":"#4c525e"}">${ready?"\u2713":"\u25cb"}</span>
       <span style="font-size:6px;color:${sst.col};min-width:38px;font-weight:${isNow?"700":"400"}">${sess}</span>
       ${ready
-        ?`<span style="flex:1;font-size:6px;color:var(--tx2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${best.strat.name}</span>
-          <span style="font-size:5.5px;color:${locked?"#f5a623":"#26a69a"};flex-shrink:0;margin-left:3px;white-space:nowrap">${best.wins??best.w??0}W · ${(best.wr*100).toFixed(0)}%${locked?" (building)":""}</span>`
+        ?`<span style="flex:1;font-size:6px;color:var(--tx2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${dom.strat.name}</span>
+          <span style="font-size:5.5px;color:#26a69a;flex-shrink:0;margin-left:3px;white-space:nowrap">${dom.wins}W \u00b7 ${(dom.wr*100).toFixed(0)}%</span>`
         :`<span style="flex:1;font-size:6px;color:var(--tx4)">waiting for winning strategy</span>`
       }
+      <span style="font-size:5.5px;color:${tallyCol};flex-shrink:0;margin-left:4px;padding-left:4px;border-left:1px solid var(--b2);white-space:nowrap">
+        ${tallyTot>0?`AI ${tally.w}W/${tally.l}L`:"AI --"}
+      </span>
     </div>`;
   }).join("");
   const domNow=getDominantStrat(currSess);
   const domBanner=domNow?`
-    <div style="padding:4px 8px;background:${adaptiveBot.apexPaused?"#3e1c1c":"#7eb8ff12"};border-bottom:1px solid var(--b1);display:flex;align-items:center;gap:6px">
-      <span style="font-size:7px;color:${adaptiveBot.apexPaused?"#f87171":"#7eb8ff"};font-weight:700;letter-spacing:1px">${adaptiveBot.apexPaused?"⏸ PAUSED":"DOMINANT"}</span>
+    <div style="padding:4px 8px;background:#7eb8ff12;border-bottom:1px solid var(--b1);display:flex;align-items:center;gap:6px">
+      <span style="font-size:7px;color:#7eb8ff;font-weight:700;letter-spacing:1px">DOMINANT</span>
       <span style="flex:1;font-size:7.5px;color:var(--tx);font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${domNow.strat.name}</span>
-      <span style="font-size:6.5px;color:#26a69a;flex-shrink:0;white-space:nowrap">${domNow.wins}W(${domNow.decayedWins??domNow.wins}d) · ${(domNow.wr*100).toFixed(0)}%WR · ${domNow.n}t</span>
-    </div>`:`<div style="padding:3px 8px;background:var(--b1);border-bottom:1px solid var(--b1);font-size:6px;color:var(--tx4)">Waiting for dominant strategy (min 10 trades)</div>`;
+      <span style="font-size:6.5px;color:#26a69a;flex-shrink:0;white-space:nowrap">${domNow.wins}W \u00b7 ${(domNow.wr*100).toFixed(0)}%WR \u00b7 ${domNow.n}t</span>
+    </div>`:"";
   let html=`${domBanner}
   <div style="font-size:6px;font-weight:700;color:${unlocked?"#26a69a":"#f5a623"};padding:3px 8px;border-bottom:1px solid var(--b1)">
-    ${unlocked?"✓ AI LIVE — dominant strategy active":"⧗ SCANNING — need 2 sessions to unlock"}
+    ${unlocked?"\u2713 AI LIVE \u2014 dominant strategy active (conf&gt;50%)":"\u29d7 SCANNING \u2014 need 2 sessions to unlock"}
   </div><div>${sessRows}</div>`;
   if(aiTrades.length){
     html+=aiTrades.map(({code,t})=>{
@@ -1853,10 +1839,13 @@ function renderAILeft(){
       const sess=t.sess||"NY",ss=SESS_STYLE[sess]||SESS_STYLE.NY,dec=mkt.tick<1?2:0;
       const slDist=Math.abs(t.entry-t.sl).toFixed(dec),tpDist=Math.abs(t.tp-t.entry).toFixed(dec);
       const rrDisp=(t.rr||2).toFixed(1),strat=STRATS.find(s=>s.id===t.stratUsed);
+      // ── show sessionTally in AI position footer (v3 port) ──────
+      const tally=ab.sessionTally[sess]||{w:0,l:0};
+      const tallyTot=tally.w+tally.l;
       return`<div class="pos-card">
         <div class="pos-header">
-          <div><div style="display:flex;align-items:center;gap:5px;margin-bottom:2px"><span class="pos-mkt" style="color:${mkt.col}">${mkt.code}</span><span class="pos-sess" style="color:${ss.col};background:${ss.bg};border:1px solid ${ss.border}">${sess}</span></div><div class="pos-strat">AI · ${strat?.name||t.stratUsed||"dominant"}</div></div>
-          <span class="pos-dir ${t.dir}">${t.dir==="long"?"LONG ▲":"SHORT ▼"}</span>
+          <div><div style="display:flex;align-items:center;gap:5px;margin-bottom:2px"><span class="pos-mkt" style="color:${mkt.col}">${mkt.code}</span><span class="pos-sess" style="color:${ss.col};background:${ss.bg};border:1px solid ${ss.border}">${sess}</span></div><div class="pos-strat">AI \u00b7 ${strat?.name||t.stratUsed||"dominant"} \u00b7 conf${((t.conf||0)*100).toFixed(0)}%</div></div>
+          <span class="pos-dir ${t.dir}">${t.dir==="long"?"LONG \u25b2":"SHORT \u25bc"}</span>
         </div>
         <div class="pos-levels">
           <div class="pos-lv" style="border:1px solid #26a69a30"><div class="pos-lv-label" style="color:#26a69a">TARGET</div><div class="pos-lv-val" style="color:#26a69a">${t.tp.toFixed(dec)}</div><div class="pos-lv-dist" style="color:#26a69a">+${tpDist}pt</div></div>
@@ -1864,12 +1853,12 @@ function renderAILeft(){
           <div class="pos-lv" style="border:1px solid #ef535030"><div class="pos-lv-label" style="color:#ef5350">STOP</div><div class="pos-lv-val" style="color:#ef5350">${t.sl.toFixed(dec)}</div><div class="pos-lv-dist" style="color:#ef5350">-${slDist}pt</div></div>
         </div>
         <div class="pos-footer">
-          <div><div class="pos-unr" style="color:${clr(unr)}">${f$(unr)}</div><div style="font-size:6px;color:var(--tx3)">conf ${((t.conf||0)*100).toFixed(0)}% · dominant strat</div></div>
-          <div class="pos-meta"><div style="color:var(--tx2)">RR ${rrDisp}:1</div><div>${tot>0?(wr*100).toFixed(0)+"% WR":""}</div></div>
+          <div><div class="pos-unr" style="color:${clr(unr)}">${f$(unr)}</div><div style="font-size:6px;color:var(--tx3)">${tallyTot>0?tally.w+"W/"+tally.l+"L in "+sess:"no "+sess+" history yet"}</div></div>
+          <div class="pos-meta"><div style="color:var(--tx2)">RR ${rrDisp}:1</div></div>
         </div>
       </div>`;}).join("");
   }else{
-    html+=`<div style="padding:6px 10px;color:var(--tx4);font-size:7px;text-align:center">${unlocked?"Watching "+currSess+" — fires on dominant strategy signal":"Need "+Math.max(0,2-foundCount)+" more session"+(2-foundCount===1?"":"s")+" · "+foundCount+"/4 ready"}</div>`;
+    html+=`<div style="padding:6px 10px;color:var(--tx4);font-size:7px;text-align:center">${unlocked?"Watching "+currSess+" \u2014 conf&gt;50% required to fire":"Need "+Math.max(0,2-foundCount)+" more session"+(2-foundCount===1?"":"s")+" \u00b7 "+foundCount+"/4 ready"}</div>`;
   }
   el.innerHTML=html;
   const tp=document.getElementById("ai-trades-panel");if(!tp)return;
@@ -1896,7 +1885,7 @@ function renderAILeft(){
       return`<tr style="background:${t.won?"#26a69a08":"#ef535008"}">
         <td><b style="color:${mkt?.col||"#fff"}">${t.code}</b></td>
         <td style="color:${ss2?.col||"var(--tx3)"};font-size:6.5px">${_sl}</td>
-        <td style="color:${t.dir==="long"?"#26a69a80":"#ef535080"}">${t.dir==="long"?"▲":"▼"}</td>
+        <td style="color:${t.dir==="long"?"#26a69a80":"#ef535080"}">${t.dir==="long"?"\u25b2":"\u25bc"}</td>
         <td style="color:${clr(t.pts)}">${fPts(t.pts??0)}</td>
         <td><b style="color:${clr(t.pnlUSD)}">${f$(t.pnlUSD)}</b></td>
         <td style="color:${t.won?"#26a69a":"#ef5350"};font-weight:700">${t.won?"W":"L"}</td>
@@ -1918,12 +1907,12 @@ function renderSigBars(){
     if(openHere.length){
       sb.innerHTML=openHere.map(({bot,t,unr,isAI})=>
         `<span class="chip ${t.dir==="long"?"cl":"cs"}" style="flex-direction:column;align-items:flex-start;gap:0;padding:1px 4px">
-          <span style="font-size:7px">${isAI?"⬡AI":""}${bot.name.split(" W")[0].slice(0,8)} ${t.dir==="long"?"▲":"▼"}</span>
+          <span style="font-size:7px">${isAI?"\u2b21AI":""}${bot.name.split(" W")[0].slice(0,8)} ${t.dir==="long"?"\u25b2":"\u25bc"}</span>
           <span style="font-size:6px">E:${t.entry?.toFixed(dec)} TP:${t.tp?.toFixed(dec)}</span>
           <b style="font-size:6px;color:${clr(unr)}">${f$(unr)}</b>
         </span>`).join("");
     }else{
-      sb.innerHTML=`<span style="color:var(--tx4);font-size:6.5px">${m.tierLabel||("T"+m.tier)} · watching</span>`;
+      sb.innerHTML=`<span style="color:var(--tx4);font-size:6.5px">${m.tierLabel||("T"+m.tier)} \u00b7 watching</span>`;
     }
     const q=liveQ[m.code];
     if(q){const cc=document.getElementById("cchg-"+m.id);if(cc){const s=q.change>=0?"+":"";cc.textContent=`${s}${q.change.toFixed(2)}(${s}${q.changePct.toFixed(2)}%)`;cc.style.color=q.change>=0?"var(--up)":"var(--dn)";}}
@@ -1964,7 +1953,7 @@ function renderRight(){
         <span class="bdot" style="background:${bc}"></span>
         <div style="flex:1;min-width:0">
           <div style="display:flex;justify-content:space-between;gap:2px">
-            <span style="color:${isBest?"var(--cy)":b.killed?"#363a45":"#787b86"};font-size:7.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${isBest?"★ ":""}${b.name}</span>
+            <span style="color:${isBest?"var(--cy)":b.killed?"#363a45":"#787b86"};font-size:7.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${isBest?"\u2605 ":""}${b.name}</span>
             <b style="color:${tot===0?"#4c525e":clr(p)};font-size:7.5px;flex-shrink:0">${tot===0?"no trades":f$(p)}</b>
           </div>
           <div style="display:flex;align-items:center;gap:3px">
@@ -1983,7 +1972,7 @@ function renderAdaptive(){
   const currSess=getSessionET(),sessions=["NY","SYDNEY","ASIA","LONDON"],ssect=document.getElementById("sess-best-sect");
   if(!ssect)return;
   const sessMap=sessions.map(sess=>({sess,best:getBestStratForSession(sess)})).filter(x=>x.best);
-  if(!sessMap.length){ssect.innerHTML=`<div style="padding:5px 9px;color:var(--tx4);font-size:7px">Waiting — need WR&gt;50% strategy per session</div>`;return;}
+  if(!sessMap.length){ssect.innerHTML=`<div style="padding:5px 9px;color:var(--tx4);font-size:7px">Waiting \u2014 need WR&gt;50% strategy per session</div>`;return;}
   ssect.innerHTML=sessMap.map(({sess,best})=>{
     const sst=SESS_STYLE[sess]||SESS_STYLE.NY,isNow=sess===currSess,wrPct=(best.wr*100).toFixed(0);
     const wrCol=best.wr>=0.65?"#26a69a":best.wr>=0.45?"#f5a623":"#ef5350";
@@ -2010,8 +1999,9 @@ document.querySelectorAll(".ivb").forEach(btn=>{
     btn.classList.add("on");iv=btn.dataset.iv;
     candles={};liveQ={};sources={};prevPx={};dirty={};
     processedTs={};startupDone=false;prevBestTradeKeys=new Set();prevBestBotUid=null;soundSeeded=false;
-    if(adaptiveBot){adaptiveBot.openTrades={};adaptiveBot.consecLosses=0;adaptiveBot.apexPaused=false;adaptiveBot._lastDomId=null;}
-    addLog("Interval → "+iv+" -- chart refreshed, all trades kept","info");
+    // ── reset AI open trades on iv switch; sessionTally / W-L intentionally preserved ──
+    if(adaptiveBot){adaptiveBot.openTrades={};adaptiveBot._barClosedCodes=new Set();}
+    addLog("Interval \u2192 "+iv+" -- chart refreshed, all trades kept","info");
     refreshFull();
   });
 });
@@ -2028,10 +2018,9 @@ setInterval(()=>{renderLeft();renderSigBars();renderRight();renderAdaptive();},1
 requestAnimationFrame(rafLoop);
 
 // ══════════════════════════════════════════════════════════════
-// AUTO-SAVE — serialize full bot state → server disk
-// Reads and writes directly from/to ff_bots_state_v4.json.
-// No in-memory server cache. GET /api/state always reads file.
-// POST /api/state always writes file (async, atomic temp+rename).
+// AUTO-SAVE  --  ff_bots_state_v5.json
+// Reads and writes directly from/to disk on every GET/POST.
+// sessionTally persists across interval changes.
 // ══════════════════════════════════════════════════════════════
 function _serializeState(){
   return{
@@ -2051,9 +2040,7 @@ function _serializeState(){
     })),
     adaptiveBot:{
       wins:adaptiveBot.wins, losses:adaptiveBot.losses,
-      consecLosses:adaptiveBot.consecLosses||0,
-      apexPaused:adaptiveBot.apexPaused||false,
-      _lastDomId:adaptiveBot._lastDomId||null,
+      sessionTally:adaptiveBot.sessionTally,
       closedTrades:adaptiveBot.closedTrades.slice(-200),
       openTrades:adaptiveBot.openTrades
     },
@@ -2071,7 +2058,7 @@ async function saveState(){
       signal:AbortSignal.timeout(8000)
     });
     const now=new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
-    addLog(`Auto-save complete at ${now} — ${(body.length/1024).toFixed(0)} KB written to disk`,"save");
+    addLog(`Auto-save complete at ${now} \u2014 ${(body.length/1024).toFixed(0)} KB written to disk`,"save");
   }catch(e){console.warn("auto-save failed:",e.message);}
 }
 
@@ -2119,17 +2106,18 @@ async function restoreState(){
     if(s.adaptiveBot){
       adaptiveBot.wins         = s.adaptiveBot.wins         ?? 0;
       adaptiveBot.losses       = s.adaptiveBot.losses       ?? 0;
-      adaptiveBot.consecLosses = s.adaptiveBot.consecLosses ?? 0;
-      adaptiveBot.apexPaused   = s.adaptiveBot.apexPaused   ?? false;
-      adaptiveBot._lastDomId   = s.adaptiveBot._lastDomId   ?? null;
       adaptiveBot.closedTrades = s.adaptiveBot.closedTrades ?? [];
       adaptiveBot.openTrades   = s.adaptiveBot.openTrades   ?? {};
+      // ── restore per-session tally ─────────────────────────────
+      if(s.adaptiveBot.sessionTally){
+        Object.assign(adaptiveBot.sessionTally, s.adaptiveBot.sessionTally);
+      }
     }
 
     if(s.processedTs) Object.assign(processedTs, s.processedTs);
 
     const age=Math.round((Date.now()-s.savedAt)/60000);
-    addLog(`State restored from disk — saved ${age} min ago · ${totalClosed} closed trades`,"save");
+    addLog(`State restored from disk \u2014 saved ${age} min ago \u00b7 ${totalClosed} closed trades`,"save");
     renderLeft();renderAllTrades();renderRight();renderAdaptive();
   }catch(e){console.warn("restore failed:",e.message);}
 }
@@ -2256,7 +2244,7 @@ if __name__ == "__main__":
         except Exception:
             pass
     _safe("")
-    _safe("  FF ELITE BOTS v4  --  8 Markets  --  4 Index Pairs  --  Auto-Save")
+    _safe("  FF ELITE BOTS v5  --  8 Markets  --  4 Index Pairs  --  Auto-Save")
     _safe("  =================================================================")
     _safe("  S&P 500  : ES  / MES   (E-mini & Micro)")
     _safe("  Nasdaq   : NQ  / MNQ   (E-mini & Micro)")
