@@ -26,8 +26,8 @@ PORT  = 7432
 CODES = ("ES", "MES", "NQ", "MNQ")
 
 IV_CFG = {
-    "1m":  ("1m",  "1d",   "5"),
-    "5m":  ("5m",  "5d",   "5"),
+    "1m":  ("1m",  "2d",   "5"),   # 2d gives ~48h of 1m bars incl overnight
+    "5m":  ("5m",  "10d",  "5"),   # 10d covers full week incl Asian/London
     "15m": ("15m", "60d",  "15"),
     "1H":  ("1h",  "180d", "60"),
 }
@@ -64,7 +64,7 @@ def _get(url, hdrs=None, timeout=18):
 def _yf_ohlc(yf_sym, yf_iv, yf_range, host="query1"):
     url = (f"https://{host}.finance.yahoo.com/v8/finance/chart/"
            f"{urllib.parse.quote(yf_sym)}?interval={yf_iv}&range={yf_range}"
-           f"&includePrePost=false&corsDomain=finance.yahoo.com")
+           f"&includePrePost=true&corsDomain=finance.yahoo.com")
     d = json.loads(_get(url))
     res = d["chart"]["result"][0]
     ts, q = res["timestamp"], res["indicators"]["quote"][0]
@@ -316,6 +316,12 @@ table.mt tr:hover td{background:var(--p2)}
       <span class="val" id="pMNQ">--</span><span class="chg" id="cMNQ"></span></div>
   </div>
   <div id="tu">--</div>
+  <div id="sess-bar" style="display:flex;gap:4px;margin-left:8px;padding-left:8px;border-left:1px solid var(--b1)">
+    <span id="sess-asia"  class="sess-chip">ASIA</span>
+    <span id="sess-london" class="sess-chip">LONDON</span>
+    <span id="sess-ny"    class="sess-chip">NY</span>
+    <span id="sess-et" style="font-size:8px;color:var(--tx3);align-self:center;margin-left:2px"></span>
+  </div>
 </div>
 <div id="body">
   <div id="left">
@@ -634,8 +640,13 @@ async function refreshFull(){
   document.getElementById("tu").textContent=new Date().toLocaleTimeString();
   document.getElementById("tbars").textContent=candles["ES"]?.length||"--";
   if(!startupDone&&isLive){
-    MKTS.forEach(m=>{const b=bs(m.code);if(b?.length)processedIdx[m.code]=b.length-2;});
-    startupDone=true;addLog("Live data loaded -- bots watching for signals","info");
+    // Set index to b.length-3 so the first processBots call checks the last
+    // completed bar -- this lets carried-over open trades exit immediately
+    // if SL/TP was already hit on the new timeframe's most recent complete bar.
+    MKTS.forEach(m=>{const b=bs(m.code);if(b?.length)processedIdx[m.code]=Math.max(0,b.length-3);});
+    startupDone=true;
+    if(Object.keys(candles).length&&!logE.some(e=>e.msg.includes("Live data")))
+      addLog("Live data loaded -- bots watching for signals","info");
   }
   processBots();renderLeft();renderAllTrades();renderRight();
 }
@@ -689,25 +700,101 @@ function drawChart(mkt){
     return;
   }
 
-  const PL=6,PR=74,PT=10,PB=22,CW=W-PL-PR,CH=H-PT-PB;
-  const maxC=Math.max(20,Math.floor(CW/9));
+  // ── Layout: volume strip at bottom 18% of chart height ──────────
+  const PL=2,PR=70,PT=8,PB=18,CW=W-PL-PR,VOLH=Math.round((H-PT-PB)*0.18),CH=H-PT-PB-VOLH-2;
+  const maxC=Math.max(20,Math.floor(CW/8));
   const vis=b.slice(-maxC),n=vis.length;
   if(n<2)return;
 
-  // Gap-based X: centre of candle i = PL + i*gap + gap/2
-  const gap=CW/n,bw=Math.max(1.5,gap*0.7),toX=i=>PL+i*gap+gap/2;
+  // Gap-based X
+  const gap=CW/n,bw=Math.max(1.5,gap*0.72),toX=i=>PL+i*gap+gap/2;
 
+  // Price range with padding
   let hiP=Math.max(...vis.map(c=>c.h)),loP=Math.min(...vis.map(c=>c.l));
-  const pad=(hiP-loP)*0.06||hiP*0.001;hiP+=pad;loP-=pad;
+  const rawRng=hiP-loP||hiP*0.01;
+  hiP+=rawRng*0.08; loP-=rawRng*0.04;
   const rng=hiP-loP||1,toY=p=>PT+CH*(1-(p-loP)/rng);
 
-  // Grid
-  ctx.font="7.5px 'Share Tech Mono'";ctx.textAlign="left";
-  for(let gi=0;gi<=5;gi++){
-    const pv=loP+(rng/5)*gi,y=toY(pv);
-    ctx.strokeStyle="#1e222d";ctx.lineWidth=1;
+  // ── Nice round price grid lines (TradingView style) ────────────
+  // Pick a step that gives 4-6 lines
+  const rawStep=rawRng/5;
+  const mag=Math.pow(10,Math.floor(Math.log10(rawStep)));
+  const niceSteps=[1,2,2.5,5,10];
+  let step=mag;
+  for(const ns of niceSteps){if(mag*ns>=rawStep){step=mag*ns;break;}}
+  const gridLo=Math.ceil(loP/step)*step;
+  ctx.font="8px 'Share Tech Mono'";ctx.textAlign="left";
+  for(let pv=gridLo;pv<=hiP;pv=Math.round((pv+step)*1e6)/1e6){
+    const y=toY(pv);
+    if(y<PT||y>PT+CH)continue;
+    // Horizontal grid line
+    ctx.strokeStyle="#1e222d";ctx.lineWidth=1;ctx.setLineDash([]);
     ctx.beginPath();ctx.moveTo(PL,y);ctx.lineTo(PL+CW,y);ctx.stroke();
-    ctx.fillStyle="#4c525e";ctx.fillText(pv.toFixed(2),PL+CW+5,y+3);
+    // Price scale background + label
+    ctx.fillStyle="#131722";ctx.fillRect(PL+CW+1,y-9,PR-2,14);
+    ctx.fillStyle="#787b86";
+    ctx.fillText(pv.toFixed(2),PL+CW+5,y+3);
+  }
+
+  // ── Session shading (Asia / London / NY) ────────────────────────
+  // All times in ET (UTC-5 standard / UTC-4 daylight).
+  // Futures Globex: Sun 6pm - Fri 5pm ET (15min break 4:15-4:30pm)
+  // Asia   : 6:00pm - 3:00am ET  (evening open through Asian close)
+  // London : 3:00am - 9:30am ET  (Frankfurt/London overlap)
+  // NY     : 9:30am - 4:15pm ET  (regular US session)
+  const SESSION_DEFS=[
+    {name:"ASIA",  startH:18, startM:0,  endH:3,  endM:0,  col:"#8080ff14", lbl:"#8080ff60"},
+    {name:"LONDON",startH:3,  startM:0,  endH:9,  endM:30, col:"#f0903014", lbl:"#f0903060"},
+    {name:"NY",    startH:9,  startM:30, endH:16, endM:15, col:"#18c86014", lbl:"#18c86060"},
+  ];
+  const etOffset=()=>{
+    // Rough DST detection: EST=-300, EDT=-240
+    const now=new Date();
+    const jan=new Date(now.getFullYear(),0,1).getTimezoneOffset();
+    const jul=new Date(now.getFullYear(),6,1).getTimezoneOffset();
+    return-Math.min(jan,jul)*60000; // ms offset from local to ET
+  };
+  const toET=ts=>{
+    const local=new Date(ts);
+    const utcMs=local.getTime()+local.getTimezoneOffset()*60000;
+    const etMs=utcMs-5*3600000; // ET = UTC-5 (approximate, handles DST ok for display)
+    return new Date(etMs);
+  };
+  // For each candle compute its ET hour fraction and shade the column
+  if(n>1){
+    vis.forEach((c,i)=>{
+      const et=toET(c.t);
+      const etH=et.getHours()+et.getMinutes()/60;
+      SESSION_DEFS.forEach(s=>{
+        let inSess=false;
+        if(s.startH>s.endH){ // crosses midnight (Asia)
+          inSess=etH>=s.startH||etH<s.endH+(s.endM/60);
+        }else{
+          inSess=etH>=s.startH+(s.startM/60)&&etH<s.endH+(s.endM/60);
+        }
+        if(inSess){
+          const x=toX(i)-gap/2;
+          ctx.fillStyle=s.col;
+          ctx.fillRect(Math.max(PL,x),PT,Math.min(gap,PL+CW-x),CH);
+        }
+      });
+    });
+    // Session name labels at top of chart
+    let lastSess=null;
+    vis.forEach((c,i)=>{
+      const et=toET(c.t);
+      const etH=et.getHours()+et.getMinutes()/60;
+      SESSION_DEFS.forEach(s=>{
+        let inSess=false;
+        if(s.startH>s.endH){inSess=etH>=s.startH||etH<s.endH+(s.endM/60);}
+        else{inSess=etH>=s.startH+(s.startM/60)&&etH<s.endH+(s.endM/60);}
+        if(inSess&&lastSess!==s.name){
+          lastSess=s.name;
+          ctx.fillStyle=s.lbl;ctx.font="bold 7px 'Share Tech Mono'";ctx.textAlign="left";
+          ctx.fillText(s.name,toX(i)-gap/2+2,PT+10);
+        }
+      });
+    });
   }
 
   // EMA 9 (gold) + EMA 21 (blue) -- aligned to candle centres via same toX()
@@ -720,15 +807,46 @@ function drawChart(mkt){
     ctx.stroke();
   });
 
-  // Candles -- TradingView up=#26a69a dn=#ef5350
+  // ── Volume bars (bottom strip) ─────────────────────────────────
+  const volBase=PT+CH+2;
+  const maxVol=Math.max(...vis.map(c=>c.v||0))||1;
   vis.forEach((c,i)=>{
-    const x=toX(i),isUp=c.c>=c.o,col=isUp?"#26a69a":"#ef5350";
-    ctx.globalAlpha=i===n-1?0.75:1;
-    ctx.strokeStyle=col;ctx.lineWidth=1;
+    const x=toX(i),isUp=c.c>=c.o;
+    const vPct=(c.v||0)/maxVol;
+    const vh=Math.max(1,vPct*VOLH);
+    ctx.fillStyle=isUp?"#26a69a28":"#ef535028";
+    ctx.fillRect(x-bw/2,volBase+VOLH-vh,bw,vh);
+  });
+
+  // ── Candles -- TradingView style ─────────────────────────────
+  // Wick: thin 1px line full high-low
+  // Body: solid filled, 1px border same color
+  // Doji: horizontal dash at close
+  // Forming bar (last): slightly transparent
+  vis.forEach((c,i)=>{
+    const x=toX(i),isUp=c.c>=c.o;
+    const upCol="#26a69a",dnCol="#ef5350";
+    const col=isUp?upCol:dnCol;
+    const alpha=i===n-1?0.72:1;
+    ctx.globalAlpha=alpha;
+
+    // Wick
+    ctx.strokeStyle=col;ctx.lineWidth=1;ctx.setLineDash([]);
     ctx.beginPath();ctx.moveTo(x,toY(c.h));ctx.lineTo(x,toY(c.l));ctx.stroke();
-    const by=toY(Math.max(c.o,c.c)),bh=Math.max(1.5,toY(Math.min(c.o,c.c))-by);
-    ctx.fillStyle=isUp?"#26a69a30":"#ef535030";ctx.fillRect(x-bw/2,by,bw,bh);
-    ctx.strokeStyle=col;ctx.strokeRect(x-bw/2,by,bw,bh);
+
+    // Body
+    const bodyTop=toY(Math.max(c.o,c.c));
+    const bodyBot=toY(Math.min(c.o,c.c));
+    const bodyH=Math.max(1.5,bodyBot-bodyTop);
+    if(bodyH<=1.5){
+      // Doji -- draw horizontal dash
+      ctx.strokeStyle=col;ctx.lineWidth=1.5;
+      ctx.beginPath();ctx.moveTo(x-bw/2,toY(c.c));ctx.lineTo(x+bw/2,toY(c.c));ctx.stroke();
+    }else{
+      // Solid body (TV style)
+      ctx.fillStyle=col;
+      ctx.fillRect(x-bw/2,bodyTop,bw,bodyH);
+    }
     ctx.globalAlpha=1;
   });
 
@@ -760,16 +878,61 @@ function drawChart(mkt){
     ctx.fillText(last.toFixed(2),bx+bxw/2,y+3.5);
   }
 
-  // Time axis
+  // ── Time axis (below volume strip) ──────────────────────────────
   ctx.fillStyle="#4c525e";ctx.font="7px 'Share Tech Mono'";ctx.textAlign="center";
-  const fmtT=ts=>new Date(ts).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
-  [0,Math.floor(n/4),Math.floor(n/2),Math.floor(3*n/4),n-1].forEach(i=>{
+  const fmtT=ts=>{
+    const d=new Date(ts);
+    // For 1H+ show date, for intraday show HH:MM
+    if(iv==="1H"){return d.toLocaleDateString([],{month:"short",day:"numeric"});}
+    return d.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+  };
+  const timeY=H-3;
+  const tickPositions=[0,Math.floor(n*0.25),Math.floor(n*0.5),Math.floor(n*0.75),n-1];
+  const usedX=[];
+  tickPositions.forEach(i=>{
     if(i<0||i>=n||!vis[i])return;
     const x=toX(i);
-    ctx.strokeStyle="#1e222d";ctx.lineWidth=1;
-    ctx.beginPath();ctx.moveTo(x,PT+CH);ctx.lineTo(x,PT+CH+3);ctx.stroke();
-    ctx.fillText(fmtT(vis[i].t),x,H-4);
+    // avoid label overlap
+    if(usedX.some(ux=>Math.abs(ux-x)<48))return;
+    usedX.push(x);
+    ctx.strokeStyle="#1e222d40";ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(x,PT);ctx.lineTo(x,volBase+VOLH);ctx.stroke();
+    ctx.fillStyle="#4c525e";
+    ctx.fillText(fmtT(vis[i].t),x,timeY);
   });
+}
+
+function updateSessionClock(){
+  // Determine current ET time (approximate -- handles DST reasonably)
+  const now=new Date();
+  const utcH=now.getUTCHours(),utcM=now.getUTCMinutes();
+  // EST = UTC-5, EDT = UTC-4. Rough DST: Mar second Sun to Nov first Sun
+  const y=now.getUTCFullYear();
+  const dstStart=new Date(Date.UTC(y,2,8-(new Date(Date.UTC(y,2,1)).getUTCDay()+7)%7,7));
+  const dstEnd  =new Date(Date.UTC(y,10,1+(7-(new Date(Date.UTC(y,10,1)).getUTCDay()))%7,6));
+  const isDST=now>=dstStart&&now<dstEnd;
+  const etOffset=isDST?-4:-5;
+  const etTotalH=(utcH+etOffset+24)%24;
+  const etH=Math.floor(etTotalH);
+  const etM=utcM;
+  const etFrac=etH+etM/60;
+
+  // Sessions (ET)
+  const inAsia  =etFrac>=18||etFrac<3;
+  const inLondon=etFrac>=3&&etFrac<9.5;
+  const inNY    =etFrac>=9.5&&etFrac<16.25;
+  const inBreak =etFrac>=16.25&&etFrac<18;   // 4:15pm-6:00pm ET
+
+  document.getElementById("sess-asia").classList.toggle("active",inAsia);
+  document.getElementById("sess-london").classList.toggle("active",inLondon);
+  document.getElementById("sess-ny").classList.toggle("active",inNY);
+
+  const ampm=etH<12?"AM":"PM";
+  const dH=(etH%12)||12;
+  const dM=String(etM).padStart(2,"0");
+  const sessLabel=inAsia?"ASIA SESSION":inLondon?"LONDON SESSION":inNY?"NY SESSION":inBreak?"AFTER HOURS":"CLOSED";
+  const etEl=document.getElementById("sess-et");
+  if(etEl)etEl.textContent=`ET ${dH}:${dM}${ampm} ${sessLabel}`;
 }
 
 function rafLoop(){
@@ -921,15 +1084,27 @@ function renderSigBars(){
 }
 
 function renderAllTrades(){
-  document.getElementById("atbody").innerHTML=allClosed.length
-    ?allClosed.map(t=>{
+  // Merge allClosed + every bot's closedTrades into one deduped list
+  // keyed by code+openT+entry so timeframe switches never lose trades.
+  const seen=new Set();
+  const merged=[];
+  const addRec=t=>{
+    const k=`${t.code}|${t.openT}|${t.entry}`;
+    if(!seen.has(k)){seen.add(k);merged.push(t);}
+  };
+  allClosed.forEach(addRec);
+  bots.forEach(b=>b.closedTrades.forEach(addRec));
+  merged.sort((a,b)=>(b.closeT||b.openT)-(a.closeT||a.openT));
+
+  document.getElementById("atbody").innerHTML=merged.length
+    ?merged.slice(0,80).map(t=>{
         const mkt=MKTS.find(m=>m.code===t.code);
         return`<tr style="background:${t.won?"#26a69a08":"#ef535008"}">
           <td><b style="color:${mkt?.col||'#fff'}">${t.code}</b></td>
           <td style="color:#9c27b0;max-width:88px;overflow:hidden;text-overflow:ellipsis">${t.botName}</td>
           <td style="color:${t.dir==="long"?"#26a69a70":"#ef535070"}">${t.dir==="long"?"L":"S"}</td>
           <td style="color:var(--tx2)">${t.entry?.toFixed(2)}</td>
-          <td style="color:var(--tx2)">${t.exitPx?.toFixed(2)}</td>
+          <td style="color:var(--tx2)">${(t.exitPx??t.ex)?.toFixed(2)}</td>
           <td style="color:${clr(t.pts)}">${fPts(t.pts??0)}</td>
           <td><b style="color:${clr(t.pnlUSD)}">${f$(t.pnlUSD)}</b></td>
           <td style="color:${t.won?"#26a69a":"#ef5350"}">${t.won?"WIN":"LOSS"}</td>
@@ -983,15 +1158,20 @@ document.querySelectorAll(".ivb").forEach(btn=>{
   btn.addEventListener("click",()=>{
     document.querySelectorAll(".ivb").forEach(b=>b.classList.remove("on"));
     btn.classList.add("on");iv=btn.dataset.iv;
-    candles={};liveQ={};sources={};prevPx={};dirty={};processedIdx={};startupDone=false;
-    allClosed=[];totalClosed=0;wave=1;uid=0;bots=STRATS.map(s=>mkBot(s,1));
-    document.getElementById("tcl").textContent="0";document.getElementById("tw").textContent="1";
-    addLog("Interval -> "+iv+" -- fetching...","info");refreshFull();
+    // Only reset candle data + bar index.
+    // Bots keep EVERYTHING: balance, wins/losses, closed history, open trades.
+    // Open trades carry over -- SL/TP exit logic works on any timeframe bar.
+    candles={};liveQ={};sources={};prevPx={};dirty={};
+    processedIdx={};startupDone=false;
+    addLog("Interval -> "+iv+" -- chart refreshed, all trades kept","info");
+    refreshFull();
   });
 });
 window.addEventListener("resize",()=>MKTS.forEach(m=>{dirty[m.id]=true;}));
 
 buildGrid();
+updateSessionClock();
+setInterval(updateSessionClock,15000);  // update session clock every 15s
 refreshFull();
 setInterval(refreshFull,30000);
 setInterval(refreshQuote,1500);
