@@ -1,6 +1,6 @@
-# FF Elite Bots v4
+# FF Elite Bots v5
 
-A fully autonomous paper trading dashboard and strategy engine for **ES, MES, NQ, and MNQ** CME futures contracts.
+A fully autonomous paper trading dashboard and strategy engine for **8 CME index futures markets** (4 contract pairs): **ES/MES**, **NQ/MNQ**, **YM/MYM**, **RTY/M2K**.
 
 Zero external libraries. Zero accounts required. Standard Python only.
 
@@ -12,17 +12,9 @@ Zero external libraries. Zero accounts required. Standard Python only.
 
 ## What It Does
 
-**`run.py`** — Live charting dashboard with 10 autonomous trading bots  
-**`broker.py`** — Paper trading engine that promotes the best-performing strategy to real paper trades
+**`newbot.py`** — Live charting dashboard + 17 session-aware trading bots + the **Apex AI** adaptive learner, all in a single Python file.
 
-The bots compete against each other in simulation. After an observation period, the best-performing strategy (by composite score) is automatically promoted to paper trading with a persistent trade ledger.
-
----
-
-## Screenshots
-
-> Dashboard runs at `http://localhost:7432`  
-> Paper trading ledger at `http://localhost:7433`
+17 strategies compete in simulation across four global sessions (Asia, London, NY, Sydney). Apex AI watches every closed trade from strategies that survive each session and builds a per-session win/loss tally it uses to take its own positions. Everything runs in one process, state auto-saves every 30 minutes to `ff_bots_state_v5.json`, and the dashboard lives at `http://localhost:7432`.
 
 ---
 
@@ -30,15 +22,14 @@ The bots compete against each other in simulation. After an observation period, 
 
 ```bash
 # Clone the repo
-git clone https://github.com/YOUR_USERNAME/ff-elite-bots.git
+git clone https://github.com/Surely-legal/ff-elite-bots.git
 cd ff-elite-bots
 
-# Window 1 — live chart dashboard
-python run.py
-
-# Window 2 — paper trading engine (optional)
-python broker.py
+# Run the dashboard + bots
+python newbot.py
 ```
+
+Then open http://localhost:7432 in your browser.
 
 No `pip install` needed. Pure Python standard library.
 
@@ -46,120 +37,115 @@ No `pip install` needed. Pure Python standard library.
 
 ## Features
 
-### Dashboard (`run.py`)
-- Live candlestick charts for all 4 contracts — ES, MES, NQ, MNQ
-- Data fetched from Yahoo Finance v8 API → Stooq CSV fallback
-- 10 competing strategy bots running simultaneously
-- Real-time leaderboard, P&L tracking, win rate scoring
-- EMA 9/21 overlays, volume bars, SL/TP lines on chart
+- Live candlestick charts for all 8 markets — ES, MES, NQ, MNQ, YM, MYM, RTY, M2K
+- Data fetched from Yahoo Finance v8 OHLC + v7 quotes → Stooq CSV fallback
+- 17 competing session-aware strategies running on every bar
+- **Apex AI (`adaptiveBot`)** — learns from non-suspended strategies, keeps a per-session W/L tally (NY / LONDON / ASIA / SYDNEY) that persists across interval changes
+- Real-time leaderboard, P&L tracking, win-rate scoring
 - Interval switching: 1m, 5m, 15m, 1H
-- Auto-respawns new bot waves when fleet drops below 5 active bots
-
-### Paper Trading Engine (`broker.py`)
-- Automatically promotes the best bot after configurable observation period
-- Promotion gates: composite score, minimum trades, minimum win rate
-- Persistent trade ledger saved to `paper_ledger.json`
-- Web dashboard at `http://localhost:7433`
-- Survives restarts — restores promoted strategy from ledger
-- Ready to swap in a real broker API when you're ready to go live
+- Session indicator lights (NY / London / Asia / Sydney / Maintenance)
+- Auto-save every 30 minutes to `ff_bots_state_v5.json` — fully isolated from v3/v4 saves
+- Suspension rule: WR < 25% after 20 trades → bot is suspended, revives at the next session (no wave spawning — all 17 always run)
 
 ---
 
-## The 10 Strategies
+## Markets
 
-| Strategy | Type | R:R | ATR Mult |
-|---|---|---|---|
-| TrendFollow A | EMA 21/55 Cross | 3.0 | 1.5× |
-| Stoch Master | Stochastic %K(9) 20/80 | 1.5 | 1.2× |
-| FF Top Trader | EMA 8/34 Cross | 2.5 | 1.5× |
-| Gold Patrol 99 | ROC(5) ±0.25% | 1.5 | 1.2× |
-| Velocity Trader | ROC(10) ±0.4% | 2.0 | 1.5× |
-| Bollinger Break | BB(20,2) Outside Band | 2.5 | 1.5× |
-| MACD Wave | MACD(12,26,9) Hist Zero | 2.0 | 1.5× |
-| ATR Channel | SMA20 ±2×ATR(14) | 2.5 | 1.5× |
-| CCI Reversal | CCI(14) ±100 Cross | 2.0 | 1.2× |
-| RSI Momentum | RSI(14) 30/70 Cross | 2.0 | 1.2× |
+| Contract | Name                     | $/pt  | Tick  | Pair | Tier          |
+|----------|--------------------------|-------|-------|------|---------------|
+| NQ       | E-Mini Nasdaq-100        | $20   | 0.25  | NDX  | T1 · MAX      |
+| MNQ      | Micro E-Mini NQ          | $2    | 0.25  | NDX  | T1 · MAX      |
+| ES       | E-Mini S&P 500           | $50   | 0.25  | SPX  | T2 · HIGH     |
+| MES      | Micro E-Mini S&P         | $5    | 0.25  | SPX  | T2 · HIGH     |
+| YM       | E-Mini Dow Jones         | $5    | 1.00  | DJI  | T3 · MOD      |
+| MYM      | Micro E-Mini Dow         | $0.50 | 1.00  | DJI  | T3 · MOD      |
+| RTY      | E-Mini Russell 2000      | $50   | 0.10  | RUT  | T4 · LOW      |
+| M2K      | Micro E-Mini Russell     | $5    | 0.10  | RUT  | T4 · LOW      |
+
+---
+
+## The 17 Strategies
+
+| Strategy           | Type                              | R:R | ATR Mult |
+|--------------------|-----------------------------------|-----|----------|
+| Asia Fade          | RSI Fade / EMA Break              | 2.0 | 1.2×     |
+| Stoch Master       | Stoch %K Session                  | 1.5 | 1.2×     |
+| FF Top Trader      | EMA Cross Session                 | 2.5 | 1.5×     |
+| Velocity Break     | ROC Session                       | 2.0 | 1.5×     |
+| BB Squeeze         | Bollinger Session                 | 2.5 | 1.5×     |
+| MACD Wave          | MACD Histogram Zero Cross         | 2.0 | 1.5×     |
+| ATR Channel        | SMA + ATR Session                 | 2.5 | 1.5×     |
+| CCI Reversal       | CCI Session                       | 2.0 | 1.2×     |
+| RSI Momentum       | RSI Session                       | 2.0 | 1.2×     |
+| Overnight Mom      | EMA 8/55 Session (trend)          | 3.5 | 1.5×     |
+| Golden Death       | SMA 50/200 Cross (trend)          | 3.5 | 2.0×     |
+| RSI 30/70          | RSI Overbought/Oversold           | 2.0 | 1.2×     |
+| BB Squeeze X       | Bollinger Squeeze Breakout        | 2.5 | 1.5×     |
+| Stoch Divergence   | Stochastic Hidden Divergence      | 2.5 | 1.3×     |
+| Parabolic SAR      | SAR Trend Reversal                | 2.0 | 1.5×     |
+| ADX Trend          | ADX + EMA Filter (trend)          | 3.5 | 1.5×     |
+| Ichimoku Cloud     | Kumo Breakout (trend)             | 4.0 | 1.5×     |
+
+Most strategies tune their thresholds per session (tighter in Asia, wider in London/NY); a few are universal.
+
+---
+
+## Sessions
+
+| Session | ET hours (approx) |
+|---------|-------------------|
+| ASIA    | 19:00 – 04:00     |
+| LONDON  | 03:00 – 12:00     |
+| NY      | 09:30 – 16:00     |
+| SYDNEY  | (overlaps Asia)   |
+| MAINT   | CME daily halt    |
+
+Sessions can overlap — each bar is evaluated against every active session and strategies that are session-specific only fire in the matching window. Apex AI keeps a separate win/loss tally per session.
 
 ---
 
 ## Pricing & Exit Logic
 
 ```
-Entry  = snap(bar.close, 0.25pt tick)       -- exact close of signal bar
-SL/TP  = entry ± ATR(14) × mult             -- snapped to 0.25pt grid
+Entry  = snap(bar.close, tick)              -- exact close of signal bar
+SL/TP  = entry ± ATR(14) × mult             -- snapped to contract tick grid
 Exit   = real bar High ≥ TP  or  Low ≤ SL
 P&L    = (exit − entry) × ptVal
 ```
 
-| Contract | $/pt | $/tick | Tick |
-|---|---|---|---|
-| ES | $50 | $12.50 | 0.25pt |
-| MES | $5 | $1.25 | 0.25pt |
-| NQ | $20 | $5.00 | 0.25pt |
-| MNQ | $2 | $0.50 | 0.25pt |
+---
+
+## Apex AI (adaptive learner)
+
+- Watches only non-suspended strategies (filtered by `getLiveStratIds()`).
+- Records each closed trade's session result into `sessionTally[NY|LONDON|ASIA|SYDNEY]`.
+- `sessionTally` persists across interval switches — flipping from 5m to 15m does not wipe its memory.
+- Per-bar close hook `_aiTallyAdd()` updates the tally on both bar-close and live-exit paths.
+- `_barClosedCodes` is reset at the top of every `processBots` cycle so a market can only register one bar-close per cycle.
+
+State file: `ff_bots_state_v5.json` (auto-saved every 30 minutes, restored on startup; fully isolated from v3/v4 save files).
 
 ---
 
-## Bot Scoring & Kill Rules
+## Suspension & Revival
 
-**Score** = Win Rate × 50% + Normalized P&L × 50%
-
-**Kill conditions:**
-- Balance drops below $48,000
-- Win rate below 25% after 20+ trades
-
-**Wave replenishment:** When 5 or fewer bots remain active, 10 new bots spawn
-
----
-
-## Configuration
-
-Edit the config block at the top of each file:
-
-**`run.py`**
-```python
-PORT = 7432   # dashboard port
-```
-
-**`broker.py`**
-```python
-PROMOTE_AFTER_MINUTES = 60    # observe bots before promoting
-MIN_SCORE             = 55    # composite score gate (0-100)
-MIN_TRADES            = 6     # minimum closed trades gate
-MIN_WIN_RATE          = 0.40  # win rate gate
-
-MARKET_ENABLED = {
-    "ES":  True,
-    "MES": True,
-    "NQ":  True,
-    "MNQ": True,
-}
-```
+- Bots with win rate < 25% after 20 trades are suspended for the rest of the current session.
+- Suspended bots revive fresh at the start of the next session.
+- There is no wave spawning — all 17 strategies are always in the fleet.
 
 ---
 
 ## Data Sources
 
-Data is fetched independently for each contract — no mirroring.
+Data is fetched independently per contract (no mirroring):
 
-1. **Yahoo Finance v8 API** (query1) — primary
-2. **Yahoo Finance v8 API** (query2) — load-balanced fallback
+1. **Yahoo Finance v8 API** (`query1`) — primary OHLC
+2. **Yahoo Finance v7 quotes** — live-tick updates
 3. **Stooq CSV** — final fallback
 
 All free. No API keys. No accounts.
 
-> Note: Yahoo Finance futures data has a ~1-10 minute delay. For tick-accurate data, an Interactive Brokers account with TWS running can be connected by modifying the data fetch layer.
-
----
-
-## Going Live
-
-When you're ready to connect a real broker, the only change needed is in `broker.py`'s `_sync()` method — replace the `_ledger` calls with your broker's order API. The promotion logic, signal generation, and trade mirroring all stay the same.
-
-Brokers with REST APIs that work well with this architecture:
-- **Tradovate** (requires funded live account + API key)
-- **Interactive Brokers** (requires funded account + TWS running locally)
-- **TradeStation** (requires account)
+> Note: Yahoo Finance futures data has a ~1–10 minute delay. For tick-accurate data, an Interactive Brokers account with TWS running can be connected by modifying the data-fetch layer.
 
 ---
 
@@ -175,19 +161,36 @@ Brokers with REST APIs that work well with this architecture:
 
 ```
 ff-elite-bots/
-├── run.py            # live dashboard + bot simulation engine
-├── broker.py         # paper trading engine + promotion logic
-├── paper_ledger.json # auto-created on first run, persists trade history
+├── newbot.py                # dashboard + 17 strategies + Apex AI (single file)
+├── ff_bots_state_v5.json    # auto-created, auto-saved every 30 min (gitignored)
+├── LICENSE
 └── README.md
 ```
 
 ---
 
+## Version History
+
+This branch (`version-history`) contains 6 progressive commits of `newbot.py`, oldest → newest:
+
+| Tag / commit msg | Original filename    | Size      |
+|------------------|----------------------|-----------|
+| v1               | `newbot.py`          | 53,731 B  |
+| v2               | `newbotv2.py`        | 61,525 B  |
+| v3               | `newbotv3save.py`    | 116,809 B |
+| v4               | `newbotv4.py`        | 135,469 B |
+| v5               | `newbotv4save.py`    | 126,047 B |
+| v6 (current)     | `newbotv5save.py`    | 126,811 B |
+
+Check out any earlier version with `git log` + `git checkout <sha>`.
+
+---
+
 ## Disclaimer
 
-This software is for **educational and paper trading purposes only**.  
-Past simulated performance does not guarantee future results.  
-Futures trading involves substantial risk of loss.  
+This software is for **educational and paper trading purposes only**.
+Past simulated performance does not guarantee future results.
+Futures trading involves substantial risk of loss.
 The authors are not responsible for any financial losses incurred.
 
 ---
@@ -195,16 +198,3 @@ The authors are not responsible for any financial losses incurred.
 ## License
 
 MIT License — see [LICENSE](LICENSE) for details.
-
----
-
-## Contributing
-
-Pull requests welcome. Please open an issue first to discuss major changes.
-
-Ideas for contributions:
-- Additional strategy implementations
-- Better data sources (WebSocket feeds)
-- Broker integrations (Tradovate, IBKR)
-- Backtesting mode
-- Mobile-friendly dashboard

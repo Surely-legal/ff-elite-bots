@@ -1,4 +1,9 @@
-# Trade ledger (contains personal paper trade history)
+# Auto-save state file (contains per-session bot tallies and open trades)
+ff_bots_state_v5.json
+
+# Legacy save files (older versions)
+ff_bots_state_v3.json
+ff_bots_state_v4.json
 paper_ledger.json
 
 # Python cache
