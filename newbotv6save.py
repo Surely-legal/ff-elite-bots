@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FF ELITE BOTS v5  --  8 Markets  --  4 Index Pairs  --  Auto-Save
+FF ELITE BOTS v6  --  8 Markets  --  4 Index Pairs  --  Auto-Save
 ===================================================================
   python run.py   (Windows CMD, PowerShell, Mac, Linux -- no pip needed)
 
   Markets: ES/MES  NQ/MNQ  YM/MYM  RTY/M2K
   Strategies: 17 session-aware bots (Asia / London / NY)
   Data: Yahoo Finance v8 OHLC + v7 quotes  ->  Stooq fallback
-  State: auto-saved every 30 min -> ff_bots_state_v5.json
+  State: auto-saved every 30 min -> ff_bots_state_v6.json
 
-  v5 additions over v4:
-  - Apex AI sessionTally restored (per-session W/L tally, persists across interval changes)
+  v6 additions over v5:
+  - Apex AI: per-session per-strategy expectancy scoring (5-trade min) replaces W/L tally
+  - Apex AI: top-2-by-expectancy consensus gate; both strats must agree on direction
+  - Apex AI: averaged SL/TP from both strategies, snapped to tick grid
+  - Apex AI: 20-bar timeout fallback to single highest-expectancy strat for 5 bars
   - getLiveStratIds() filter: Apex only learns from non-suspended strategies
-  - _aiTallyAdd() wired into bar-loop and live-exit closes for adaptiveBot
   - adaptiveBot._barClosedCodes properly initialized and reset each processBots cycle
-  - Save file: ff_bots_state_v5.json (fully isolated from v3/v4 saves)
+  - Save file: ff_bots_state_v6.json (fully isolated from v3/v4/v5 saves)
 """
 
 import sys, io as _io
@@ -33,7 +35,7 @@ PORT  = 7432
 CODES = ("ES","MES","NQ","MNQ","YM","MYM","RTY","M2K")
 
 # ── AUTO-SAVE ────────────────────────────────────────────────────────────────
-STATE_FILE     = "ff_bots_state_v5.json"
+STATE_FILE     = "ff_bots_state_v6.json"
 AUTOSAVE_EVERY = 30 * 60   # seconds
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -227,7 +229,7 @@ HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>FF Elite Bots v5</title>
+<title>FF Elite Bots v6</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@700;900&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
@@ -455,12 +457,28 @@ table.mt tr:hover td{background:var(--p2)}
       <span id="open-count" style="color:var(--up);font-size:7px"></span>
     </div>
     <div id="openbox"><div style="padding:8px 10px;color:var(--tx3);font-size:8.5px">Waiting for signals...</div></div>
-    <div class="ph" style="border-top:1px solid var(--b2)">
+    <div class="ph" id="apex-header" style="border-top:1px solid var(--b2);display:flex;align-items:center;gap:6px">
       <span style="color:#7eb8ff">&#x2B21; APEX AI</span>
       <span id="ai-wr-badge" style="font-size:6.5px;color:var(--tx3);font-weight:normal;text-transform:none;letter-spacing:0"></span>
+      <span id="apex-expand-btn" onclick="openApexFullscreen()" title="Open Apex fullscreen view" style="margin-left:auto;cursor:pointer;font-size:11px;line-height:1;color:#7eb8ff;padding:3px 7px;border:1px solid #7eb8ff60;background:#7eb8ff12;border-radius:2px;letter-spacing:0">&#x26F6;</span>
     </div>
     <div id="ai-panel-left"><div style="padding:8px 10px;color:var(--tx3);font-size:8px">Learning... needs WR&gt;50% strategy per session</div></div>
     <div id="ai-trades-panel" style="flex-shrink:0;overflow-y:auto;max-height:130px;border-bottom:1px solid var(--b2);display:none"></div>
+  </div>
+  <!-- ── Apex AI fullscreen overlay ─────────────────────────── -->
+  <div id="apex-fs" style="display:none;position:fixed;inset:0;background:#0c0e15f2;z-index:9999;flex-direction:column;font-family:inherit">
+    <div style="display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--b2);background:#0a0c12">
+      <span style="font-size:11px;color:#7eb8ff;font-weight:700;letter-spacing:2px;flex:1">&#x2B21; APEX AI &mdash; FULLSCREEN</span>
+      <span id="apex-fs-tabs" style="display:flex;gap:6px"></span>
+      <span onclick="closeApexFullscreen()" style="cursor:pointer;color:var(--tx2);padding:3px 10px;border:1px solid var(--b2);font-size:9px" title="Close">&#x2715; CLOSE</span>
+    </div>
+    <div id="apex-fs-stats" style="padding:10px 14px;border-bottom:1px solid var(--b2)"></div>
+    <div id="apex-fs-open" style="padding:8px 14px;border-bottom:1px solid var(--b2);background:#7eb8ff08"></div>
+    <div id="apex-fs-chart-wrap" style="padding:8px 14px;border-bottom:1px solid var(--b2)">
+      <div style="font-size:7px;color:var(--tx3);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Cumulative P&amp;L</div>
+      <div id="apex-fs-chart" style="height:160px"></div>
+    </div>
+    <div id="apex-fs-trades" style="flex:1;overflow-y:auto;padding:0 14px 10px"></div>
   </div>
   <div id="center">
     <div id="cgrid"></div>
@@ -502,7 +520,7 @@ table.mt tr:hover td{background:var(--p2)}
     <div class="rsect" style="font-size:7.5px">WR &lt;25% after 20 &rarr; suspended<br>Revives fresh at each new session<br>No wave spawning &mdash; all 17 run always</div>
   </div>
 </div>
-<div id="log"><span class="lc info">FF Elite Bots v5 &mdash; 8 markets &mdash; 4 index pairs &mdash; 17 session-aware strategies</span></div>
+<div id="log"><span class="lc info">FF Elite Bots v6 &mdash; 8 markets &mdash; 4 index pairs &mdash; 17 session-aware strategies</span></div>
 </div>
 
 <div id="chart-tooltip"></div>
@@ -611,13 +629,28 @@ function comboScore(p){
   return wr*0.80+pnlScore*0.20;
 }
 
-// ── Adaptive (AI) bot state (v3 port) ─────────────────────────
+// ── Adaptive (AI) bot state ───────────────────────────────────
 // _barClosedCodes: initialized here, reset each processBots cycle
-// sessionTally: persists across interval changes (not reset on iv switch)
+// sessionTally: per-session per-strategy expectancy data, persists across iv
+//   shape: {NY:{stratId:{wins,losses,totalWinPts,totalLossPts}}, LONDON:{...}, ...}
+// apexMode: per-session CONSENSUS / FALLBACK timeout state
 const adaptiveBot={
   uid:-1,name:"Apex AI",openTrades:{},closedTrades:[],wins:0,losses:0,
   _barClosedCodes:new Set(),
-  sessionTally:{NY:{w:0,l:0},LONDON:{w:0,l:0},ASIA:{w:0,l:0},SYDNEY:{w:0,l:0}}
+  sessionTally:{NY:{},LONDON:{},ASIA:{},SYDNEY:{}},
+  apexMode:{NY:"CONSENSUS",LONDON:"CONSENSUS",ASIA:"CONSENSUS",SYDNEY:"CONSENSUS"},
+  barsSinceLastTrade:{NY:0,LONDON:0,ASIA:0,SYDNEY:0},
+  fallbackBarsRemaining:{NY:0,LONDON:0,ASIA:0,SYDNEY:0},
+  // ── per-session Apex W/L (Apex's own combined trades, NOT per-strat) ──
+  apexSessWL:{NY:{w:0,l:0},LONDON:{w:0,l:0},ASIA:{w:0,l:0},SYDNEY:{w:0,l:0}},
+  // ── per-strategy per-market last raw signal cache (lookback consensus) ──
+  // shape: {`${stratId}|${code}`: {dir, barT}} — overwritten on flip (auto-discard)
+  _lastSig:{},
+  // ── last bar.t we ticked Apex counters for, per market ──
+  // prevents over-counting when the live bar is re-evaluated each cycle
+  _lastApexTickT:{},
+  // ── preserved placeholder fields (kept across save/restore) ──
+  apexPaused:false,consecLosses:0,_lastDomId:null
 };
 
 // ── Only allow Apex to learn from non-suspended strategies ────
@@ -625,12 +658,105 @@ function getLiveStratIds(){
   return new Set(bots.filter(b=>!b.killed).map(b=>b.strat.id));
 }
 
-// ── Per-session tally helper for Apex AI ──────────────────────
-function _aiTallyAdd(sess,won){
-  const key=sess||"NY";
-  if(adaptiveBot.sessionTally[key]){
-    won?adaptiveBot.sessionTally[key].w++:adaptiveBot.sessionTally[key].l++;
-  }
+// ── Apex expectancy: per-session per-strategy tally ──────────
+// Slot shape: {wins,losses,totalWinPts,totalLossPts}
+// Recorded from regular bot trade closes (each bot runs one strategy);
+// Apex's own combined trades are NOT tallied here (kept clean for selection).
+const APEX_MIN_TRADES=5;
+const APEX_FALLBACK_BARS_THRESHOLD=20;
+const APEX_FALLBACK_DURATION=5;
+function _ensureSessSlot(sess,stratId){
+  const t=adaptiveBot.sessionTally;
+  if(!t[sess])t[sess]={};
+  if(!t[sess][stratId])t[sess][stratId]={wins:0,losses:0,totalWinPts:0,totalLossPts:0};
+  return t[sess][stratId];
+}
+// Strict whitelist for valid session keys — anything else is rejected.
+const VALID_SESSIONS=new Set(["NY","LONDON","ASIA","SYDNEY"]);
+function _sessTallyAdd(sess,stratId,won,pts){
+  // ── strict scoping: only tally for whitelisted sessions and known strats ──
+  if(!VALID_SESSIONS.has(sess))return;
+  if(!stratId||!STRATS.some(s=>s.id===stratId))return;
+  if(!adaptiveBot.sessionTally[sess])adaptiveBot.sessionTally[sess]={};
+  const slot=_ensureSessSlot(sess,stratId);
+  const p=Math.abs(pts||0);
+  if(won){slot.wins++;slot.totalWinPts+=p;}
+  else   {slot.losses++;slot.totalLossPts+=p;}
+}
+function expectancy(sess,stratId){
+  const slot=adaptiveBot.sessionTally?.[sess]?.[stratId];
+  if(!slot)return{exp:0,n:0,wr:0,avgWin:0,avgLoss:0};
+  const n=slot.wins+slot.losses;
+  if(n===0)return{exp:0,n:0,wr:0,avgWin:0,avgLoss:0};
+  const wr=slot.wins/n;
+  const avgWin =slot.wins  >0?slot.totalWinPts /slot.wins  :0;
+  const avgLoss=slot.losses>0?slot.totalLossPts/slot.losses:0;
+  return{exp:wr*avgWin-(1-wr)*avgLoss,n,wr,avgWin,avgLoss};
+}
+// Top-2 non-suspended strategies by expectancy (≥APEX_MIN_TRADES each)
+function getTop2BySession(sess){
+  if(!sess||sess==="MAINT")return[];
+  const liveIds=getLiveStratIds();
+  const ranked=[];
+  STRATS.forEach(s=>{
+    if(!liveIds.has(s.id))return;
+    const e=expectancy(sess,s.id);
+    if(e.n<APEX_MIN_TRADES)return;
+    ranked.push({strat:s,exp:e.exp,n:e.n,wr:e.wr,avgWin:e.avgWin,avgLoss:e.avgLoss});
+  });
+  ranked.sort((a,b)=>b.exp-a.exp);
+  return ranked.slice(0,2);
+}
+// Best single (highest expectancy) — used for fallback / banner
+function getApexBest(sess){
+  const top=getTop2BySession(sess);
+  return top[0]||null;
+}
+// Compute SL/TP for a given strat at a given bar (mirrors bot-loop math)
+function _stratLevels(strat,sig,entry,atrV,sessRRMult,mkConf,mkt){
+  const c=mkConf??1.0;
+  const rrMult=Math.max(1.0,strat.rr*sessRRMult);
+  const dist=snap(Math.max(atrV*strat.atrMult*c,2*mkt.tick),mkt.tick);
+  const sl=snap(sig==="long"?entry-dist:entry+dist,mkt.tick);
+  const tp=snap(sig==="long"?entry+dist*rrMult:entry-dist*rrMult,mkt.tick);
+  return{sl,tp,dist,rrMult};
+}
+// Interval-aware lookback for consensus
+function _ivBarMs(){
+  return iv==="1m"?60000:iv==="15m"?900000:iv==="1H"?3600000:300000;
+}
+function apexLookbackBars(){
+  return iv==="1m"?5:iv==="5m"?4:iv==="15m"?3:iv==="1H"?3:2;
+}
+// Record a raw signal for a strategy on a market (lookback cache).
+// Always overwrites the previous entry — flips auto-discard the older signal.
+function _recordStratSig(stratId,code,dir,barT){
+  if(!stratId||!code||!dir)return;
+  adaptiveBot._lastSig[`${stratId}|${code}`]={dir,barT};
+}
+// Consensus signal with lookback window: both top-2 strategies must have a
+// recorded signal in the same direction within `apexLookbackBars()` bars on
+// this market. Only the most recent signal per strategy is consulted.
+function getApexConsensusSig(bars,sess,code,curBarT){
+  const top=getTop2BySession(sess);
+  if(top.length<2)return null;
+  const lbMs=apexLookbackBars()*_ivBarMs();
+  const r1=adaptiveBot._lastSig[`${top[0].strat.id}|${code}`];
+  const r2=adaptiveBot._lastSig[`${top[1].strat.id}|${code}`];
+  if(!r1||!r2)return null;
+  if(curBarT-r1.barT>lbMs)return null;
+  if(curBarT-r2.barT>lbMs)return null;
+  if(r1.dir!==r2.dir)return null;
+  return{sig:r1.dir,strats:top,strat1:top[0],strat2:top[1],
+         lookbackBars:apexLookbackBars()};
+}
+// Fallback signal: single highest-expectancy strategy
+function getApexFallbackSig(bars,sess){
+  const best=getApexBest(sess);
+  if(!best)return null;
+  const sig=best.strat.signal(bars);
+  if(!sig)return null;
+  return{sig,strats:[best],strat1:best,strat2:null};
 }
 
 let t1Consensus=null;
@@ -755,7 +881,7 @@ function sessScore(p){
   return wr*0.50+Math.max(0,Math.min(1,avgPnl/500))*0.30+Math.max(0,Math.min(1,bestW/1000))*0.20;
 }
 
-// ── v5: liveIds filter — only learn from non-suspended strats ──
+// ── v6: liveIds filter — only learn from non-suspended strats ──
 function getQualifiedStrats(sess,code){
   const liveIds=getLiveStratIds();
   return STRATS.filter(s=>{
@@ -1096,7 +1222,7 @@ const bestBot=()=>{const ab=live();return ab.length?ab.reduce((b,x)=>score(x)>sc
 
 function processBots(){
   if(!startupDone)return;
-  // ── v5: reset _barClosedCodes for all bots AND adaptiveBot ──
+  // ── v6: reset _barClosedCodes for all bots AND adaptiveBot ──
   bots.forEach(b=>{b._barClosedCodes=new Set();});
   adaptiveBot._barClosedCodes=new Set();
 
@@ -1108,13 +1234,17 @@ function processBots(){
     const atr=atrArr(b,14);
     const lastTs=processedTs[mkt.code]??0;
     let si=b.findIndex(bar=>bar.t>lastTs);
-    if(si===-1||si>b.length-2)return;
-    const ei=b.length-2;
+    // ── live-bar fix: process up to b.length-1 (was b.length-2)
+    // so SL/TP and signals reflect the current forming bar, not the
+    // last fully-closed bar. processedTs is only advanced on closed bars
+    // below so the live bar gets re-evaluated each cycle.
+    if(si===-1||si>b.length-1)return;
+    const ei=b.length-1;
 
     for(let i=si;i<=ei;i++){
       const bar=b[i];
       const sess=getSessionET(bar.t),sessLabel=getSessionLabel(bar.t);
-      if(sess==="MAINT"){processedTs[mkt.code]=bar.t;continue;}
+      if(sess==="MAINT"){if(i<b.length-1)processedTs[mkt.code]=bar.t;continue;}
 
       if(!mkt._lastSess)mkt._lastSess=sess;
       if(mkt._lastSess!==sess){
@@ -1155,6 +1285,9 @@ function processBots(){
             const pnl=Math.round(pts*mkt.ptVal*100)/100;
             bot.balance=Math.round((bot.balance+pnl)*100)/100;
             won?bot.wins++:bot.losses++;won?bot._sessWins++:bot._sessLosses++;totalClosed++;
+            // ── per-strategy expectancy tally for Apex selection ──
+            // (idempotent: a trade is tallied at most once, in its open-session bucket)
+            if(!t._tallied){_sessTallyAdd(t.sess,bot.strat.id,won,pts);t._tallied=true;}
             const rec={code:mkt.code,col:mkt.col,botName:bot.name,stratId:bot.strat.id,
               dir:t.dir,entry:t.entry,exitPx:ex,pts:Math.round(pts*100)/100,
               pnlUSD:pnl,won,sl:t.sl,tp:t.tp,openT:t.openT,closeT:bar.t,atr:t.atr,
@@ -1172,11 +1305,15 @@ function processBots(){
         }else if(atrOK){
           const pKey=`${bot.uid}_${mkt.code}`;
           const rawSig=bot.strat.signal(b.slice(0,i+1));
+          // ── lookback cache: record latest non-null signal per (strat,market) ──
+          if(rawSig)_recordStratSig(bot.strat.id,mkt.code,rawSig,bar.t);
           let sig=null;
           if(bot.strat.confirm){
             const pending=pendingSignals[pKey];
-            if(pending){sig=pending.sig;delete pendingSignals[pKey];}
-            if(rawSig&&!pending)pendingSignals[pKey]={sig:rawSig,barT:bar.t};
+            // confirm: only apply pending sig if it was queued on an
+            // EARLIER bar (live-bar re-evaluation must not fire confirm)
+            if(pending&&pending.barT!==bar.t){sig=pending.sig;delete pendingSignals[pKey];}
+            if(rawSig&&(!pending||pending.barT!==bar.t))pendingSignals[pKey]={sig:rawSig,barT:bar.t};
           }else{sig=rawSig;}
           if(sig&&atr[i]!=null){
             const entry=snap(bar.c,mkt.tick),c=mkt.conf??1.0;
@@ -1210,36 +1347,86 @@ function processBots(){
           const rec={code:mkt.code,col:mkt.col,botName:"Apex AI",stratId:"ADAPTIVE",
             dir:at.dir,entry:at.entry,exitPx:ex,pts:Math.round(pts*100)/100,
             pnlUSD:pnl,won,sl:at.sl,tp:at.tp,openT:at.openT,closeT:bar.t,
-            atr:at.atr,sess:at.sess,sessLabel:at.sessLabel||at.sess,conf:at.conf};
+            atr:at.atr,sess:at.sess,sessLabel:at.sessLabel||at.sess,conf:at.conf,
+            apexMode:at.apexMode||"CONSENSUS",stratUsed:at.stratUsed};
+          // ── per-session Apex W/L (Apex's own trades only) ──
+          if(adaptiveBot.apexSessWL?.[at.sess]){
+            won?adaptiveBot.apexSessWL[at.sess].w++:adaptiveBot.apexSessWL[at.sess].l++;
+          }
           adaptiveBot.closedTrades=[...adaptiveBot.closedTrades.slice(-199),rec];
           allClosed=[rec,...allClosed].slice(0,5000);
           delete adaptiveBot.openTrades[mkt.code];
-          // ── v5: mark bar-closed and tally the session result ──
+          // ── v6: mark bar-closed (Apex own trade — no sessionTally tally) ──
           adaptiveBot._barClosedCodes.add(mkt.code);
           recordPerfAll("ADAPTIVE",at.openT,mkt.code,won,pnl);
-          _aiTallyAdd(at.sess,won);
           document.getElementById("tcl").textContent=totalClosed;
           addLog(`AI ${mkt.code} ${won?"WIN":"LOSS"} ${f$(pnl)} [${at.sessLabel||at.sess}] conf:${((at.conf||0)*100).toFixed(0)}%`,won?"win":"loss");
         }
       }else if(atr[i]!=null){
-        // ── Adaptive bot: enter new position ──────────────────────
+        // ── Apex: enter new position (consensus / fallback) ───────
         const aiHasPos=Object.keys(adaptiveBot.openTrades).length>0;
-        if(!aiHasPos&&aiFullyUnlocked()){
-          const res=getAdaptiveSig(mkt.code,b.slice(0,i+1),sess,atr[i]);
+        const sessOk=sess&&sess!=="MAINT"&&adaptiveBot.barsSinceLastTrade.hasOwnProperty(sess);
+        if(!aiHasPos&&aiFullyUnlocked()&&sessOk){
+          // ── tick guard: only advance bar-counters on a NEW bar per market.
+          // The live bar is re-evaluated each cycle; its counters must not
+          // burn the consensus timeout or fallback duration.
+          const tickKey=mkt.code;
+          const isNewBar=bar.t>(adaptiveBot._lastApexTickT[tickKey]||0);
+          if(isNewBar){
+            adaptiveBot.barsSinceLastTrade[sess]=(adaptiveBot.barsSinceLastTrade[sess]||0)+1;
+            adaptiveBot._lastApexTickT[tickKey]=bar.t;
+          }
+          const mode=adaptiveBot.apexMode[sess]||"CONSENSUS";
+          let res=null;
+          if(mode==="FALLBACK"){
+            res=getApexFallbackSig(b.slice(0,i+1),sess);
+            // decrement fallback duration only on a new bar
+            if(isNewBar){
+              const rem=(adaptiveBot.fallbackBarsRemaining[sess]||0)-1;
+              adaptiveBot.fallbackBarsRemaining[sess]=Math.max(0,rem);
+              if(adaptiveBot.fallbackBarsRemaining[sess]===0){
+                adaptiveBot.apexMode[sess]="CONSENSUS";
+                adaptiveBot.barsSinceLastTrade[sess]=0;
+              }
+            }
+          }else{
+            res=getApexConsensusSig(b.slice(0,i+1),sess,mkt.code,bar.t);
+            // if no consensus and timeout exceeded, switch to FALLBACK mode
+            if(!res&&adaptiveBot.barsSinceLastTrade[sess]>=APEX_FALLBACK_BARS_THRESHOLD){
+              adaptiveBot.apexMode[sess]="FALLBACK";
+              adaptiveBot.fallbackBarsRemaining[sess]=APEX_FALLBACK_DURATION;
+            }
+          }
           if(res){
             const entry=snap(bar.c,mkt.tick),mkConf=mkt.conf??1.0;
-            const combined=Math.min(1.0,mkConf*res.conf);
-            const rrFinal=combined>=0.85?3.5:combined>=0.75?3.0:combined>=0.65?2.5:2.0;
-            const dist=snap(Math.max(atr[i]*1.2*combined,2*mkt.tick),mkt.tick);
-            const sl=snap(res.sig==="long"?entry-dist:entry+dist,mkt.tick);
-            const tp=snap(res.sig==="long"?entry+dist*rrFinal:entry-dist*rrFinal,mkt.tick);
+            const sessRRMult=sess==="NY"?1.0:sess==="LONDON"?0.9:sess==="ASIA"?0.75:0.70;
+            // compute per-strategy SL/TP, then average for Apex (consensus only;
+            // fallback uses single strat's levels directly).
+            const lv1=_stratLevels(res.strat1.strat,res.sig,entry,atr[i],sessRRMult,mkConf,mkt);
+            let sl,tp,rrFinal;
+            if(res.strat2){
+              const lv2=_stratLevels(res.strat2.strat,res.sig,entry,atr[i],sessRRMult,mkConf,mkt);
+              sl=snap((lv1.sl+lv2.sl)/2,mkt.tick);
+              tp=snap((lv1.tp+lv2.tp)/2,mkt.tick);
+              rrFinal=(lv1.rrMult+lv2.rrMult)/2;
+            }else{
+              sl=lv1.sl;tp=lv1.tp;rrFinal=lv1.rrMult;
+            }
+            const stratUsed=res.strat2
+              ?`${res.strat1.strat.id}+${res.strat2.strat.id}`
+              :res.strat1.strat.id;
+            adaptiveBot._lastDomId=res.strat1.strat.id;
             adaptiveBot.openTrades[mkt.code]={dir:res.sig,entry,sl,tp,openT:bar.t,
-              atr:atr[i],sess,sessLabel,conf:combined,rr:rrFinal,votes:res.votes,
-              stratUsed:res.strat?.s?.id||"CONSENSUS"};
+              atr:atr[i],sess,sessLabel,conf:Math.min(1.0,mkConf),
+              rr:rrFinal,votes:res.strat2?2:1,stratUsed,
+              apexMode:mode}; 
+            // reset bars-since-last-trade for this session on entry
+            adaptiveBot.barsSinceLastTrade[sess]=0;
           }
         }
       }
-      processedTs[mkt.code]=bar.t;
+      // only mark CLOSED bars as processed; live bar must be re-evaluated
+      if(i<b.length-1)processedTs[mkt.code]=bar.t;
     }
   });
 
@@ -1316,17 +1503,25 @@ function checkLiveExits(){
       const mkt=MKTS.find(m=>m.code===code);if(!mkt)return;
       const p=q.price,bars=bs(code),liveBar=bars.length?bars[bars.length-1]:null;
       const barH=liveBar?Math.max(liveBar.h,p):p,barL=liveBar?Math.min(liveBar.l,p):p;
-      let closed=false,ex=0,won=false;
+      let closed=false,ex=0,won=false,closeReason="";
       if(t.dir==="long"){
-        if(barH>=t.tp&&barL<=t.sl){ex=t.sl;closed=true;won=false;}
-        else if(barH>=t.tp){ex=t.tp;closed=true;won=true;}
-        else if(barL<=t.sl){ex=t.sl;closed=true;won=false;}
+        if(barH>=t.tp&&barL<=t.sl){ex=t.sl;closed=true;won=false;closeReason="sl";}
+        else if(barH>=t.tp){ex=t.tp;closed=true;won=true;closeReason="tp";}
+        else if(barL<=t.sl){ex=t.sl;closed=true;won=false;closeReason="sl";}
       }else{
-        if(barL<=t.tp&&barH>=t.sl){ex=t.sl;closed=true;won=false;}
-        else if(barL<=t.tp){ex=t.tp;closed=true;won=true;}
-        else if(barH>=t.sl){ex=t.sl;closed=true;won=false;}
+        if(barL<=t.tp&&barH>=t.sl){ex=t.sl;closed=true;won=false;closeReason="sl";}
+        else if(barL<=t.tp){ex=t.tp;closed=true;won=true;closeReason="tp";}
+        else if(barH>=t.sl){ex=t.sl;closed=true;won=false;closeReason="sl";}
       }
-      if(closed&&bot._barClosedCodes?.has(code))closed=false;
+      // ── HARD SL OVERRIDE ────────────────────────────────────────────────
+      // If live price has blown through SL by >1 tick, bypass the
+      // _barClosedCodes guard. Applies to SL only — TP closes still respect
+      // the within-cycle dedup guard.
+      const slBreach=closeReason==="sl"&&(t.dir==="long"
+        ? p<(t.sl-mkt.tick)
+        : p>(t.sl+mkt.tick));
+      if(closed&&bot._barClosedCodes?.has(code)&&!slBreach)closed=false;
+      if(slBreach&&closed){ex=t.sl;}
       if(closed){
         ex=snap(ex,mkt.tick);
         const pts=t.dir==="long"?ex-t.entry:t.entry-ex,pnl=Math.round(pts*mkt.ptVal*100)/100;
@@ -1336,13 +1531,20 @@ function checkLiveExits(){
         const rec={code,col:mkt.col,botName:bot.name,stratId:bot.strat?.id||"ADAPTIVE",
           dir:t.dir,entry:t.entry,exitPx:ex,pts:Math.round(pts*100)/100,
           pnlUSD:pnl,won,sl:t.sl,tp:t.tp,openT:t.openT,closeT:Date.now(),
-          atr:t.atr,sess:t.sess,sessLabel:t.sessLabel||t.sess,live:true};
+          atr:t.atr,sess:t.sess,sessLabel:t.sessLabel||t.sess,live:true,
+          apexMode:isAI?(t.apexMode||"CONSENSUS"):undefined,
+          stratUsed:isAI?t.stratUsed:undefined};
+        // ── per-session Apex W/L on live exit ──
+        if(isAI&&adaptiveBot.apexSessWL?.[t.sess]){
+          won?adaptiveBot.apexSessWL[t.sess].w++:adaptiveBot.apexSessWL[t.sess].l++;
+        }
         bot.closedTrades=[...bot.closedTrades.slice(-199),rec];
         allClosed=[rec,...allClosed].slice(0,5000);
         delete bot.openTrades[code];
         recordPerfAll(rec.stratId,t.openT,code,won,pnl);
-        // ── v5: tally session result for Apex AI live exits ──
-        if(isAI)_aiTallyAdd(t.sess,won);
+        // ── per-strategy expectancy tally for Apex selection (skip Apex's own combined trades) ──
+        // (idempotent: a trade is tallied at most once, in its open-session bucket)
+        if(!isAI&&!t._tallied){_sessTallyAdd(t.sess,rec.stratId,won,rec.pts);t._tallied=true;}
         document.getElementById("tcl").textContent=totalClosed;
         const tag=isAI?"AI ":"";
         addLog(`${tag}${code} ${bot.name} ${won?"WIN":"LOSS"} ${f$(pnl)} [live]`,won?"win":"loss");
@@ -1799,32 +2001,59 @@ function renderAILeft(){
     else badge.innerHTML=`<span style="color:#f5a623">\u29d7 SCANNING \u00b7 ${foundCount}/4 sessions \u00b7 need 2</span>`;
   }
   const aiTrades=Object.entries(ab.openTrades).map(([code,t])=>({code,t}));
-  // ── sessionTally shown per-row in sessRows (v3 port) ──────────
+  // ── sessRows: per-session expectancy + top-2 dominant strategies ─────
   const sessRows=["NY","LONDON","ASIA","SYDNEY"].map(sess=>{
     const sst=SESS_STYLE[sess]||SESS_STYLE.NY,isNow=sess===currSess;
-    const dom=getDominantStrat(sess),ready=dom!==null;
-    const tally=ab.sessionTally[sess]||{w:0,l:0};
-    const tallyTot=tally.w+tally.l;
-    const tallyCol=tallyTot===0?"var(--tx4)":tally.w/tallyTot>=0.5?"#26a69a":"#ef5350";
-    return`<div style="display:flex;align-items:center;gap:4px;padding:2px 6px;border-bottom:1px solid var(--b1);${isNow?"background:"+sst.bg+"20;border-left:2px solid "+sst.col+";":""}">
-      <span style="font-size:8.5px;line-height:1;color:${ready?"#26a69a":"#4c525e"}">${ready?"\u2713":"\u25cb"}</span>
-      <span style="font-size:6px;color:${sst.col};min-width:38px;font-weight:${isNow?"700":"400"}">${sess}</span>
-      ${ready
-        ?`<span style="flex:1;font-size:6px;color:var(--tx2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${dom.strat.name}</span>
-          <span style="font-size:5.5px;color:#26a69a;flex-shrink:0;margin-left:3px;white-space:nowrap">${dom.wins}W \u00b7 ${(dom.wr*100).toFixed(0)}%</span>`
-        :`<span style="flex:1;font-size:6px;color:var(--tx4)">waiting for winning strategy</span>`
-      }
-      <span style="font-size:5.5px;color:${tallyCol};flex-shrink:0;margin-left:4px;padding-left:4px;border-left:1px solid var(--b2);white-space:nowrap">
-        ${tallyTot>0?`AI ${tally.w}W/${tally.l}L`:"AI --"}
-      </span>
+    const top=getTop2BySession(sess);
+    const ready=top.length>0;
+    const expVal=ready?top[0].exp:0;
+    const expCol=expVal>0?"#26a69a":expVal<0?"#ef5350":"var(--tx4)";
+    const dualLabel=top.length>=2
+      ?`${top[0].strat.name} + ${top[1].strat.name}`
+      :top.length===1?top[0].strat.name:"";
+    const modeLabel=ready?(adaptiveBot.apexMode[sess]||"CONSENSUS"):"";
+    // per-session Apex W/L (separate from per-strat expectancy)
+    const wl=adaptiveBot.apexSessWL?.[sess]||{w:0,l:0};
+    const wlTot=wl.w+wl.l;
+    const wlCol=wlTot===0?"var(--tx4)":wl.w/wlTot>=0.5?"#26a69a":"#ef5350";
+    // dominant strats stacked vertically (no truncation)
+    const stratList=top.length
+      ?top.map((s,i)=>`<div style="font-size:6.5px;color:var(--tx2);line-height:1.45;padding:1px 0;word-break:break-word${i>0?';border-top:1px dotted var(--b1);margin-top:2px;padding-top:3px':''}">${s.strat.name}</div>`).join("")
+      :`<div style="font-size:6px;color:var(--tx4);padding:2px 0">need 5+ trades per strategy</div>`;
+    return`<div style="display:flex;align-items:flex-start;gap:4px;padding:3px 6px;border-bottom:1px solid var(--b1);${isNow?"background:"+sst.bg+"20;border-left:2px solid "+sst.col+";":""}">
+      <span style="font-size:8.5px;line-height:1;color:${ready?"#26a69a":"#4c525e"};margin-top:1px">${ready?"\u2713":"\u25cb"}</span>
+      <span style="font-size:6px;color:${sst.col};min-width:38px;font-weight:${isNow?"700":"400"};margin-top:1px">${sess}</span>
+      <div style="flex:1;display:flex;flex-direction:column;gap:1px;min-width:0">${stratList}</div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:1px;flex-shrink:0;border-left:1px solid var(--b2);padding-left:4px">
+        ${ready?`<span style="font-size:5.5px;color:${expCol};white-space:nowrap">E ${expVal.toFixed(2)} \u00b7 ${top[0].n}t</span>`:''}
+        <span style="font-size:5.5px;color:${wlCol};white-space:nowrap">${wlTot>0?"AI "+wl.w+"W/"+wl.l+"L":"AI --"}</span>
+        <span style="font-size:5.5px;color:${modeLabel==="FALLBACK"?"#f5a623":"#7eb8ff"};white-space:nowrap;font-weight:700">${modeLabel||"--"}</span>
+      </div>
     </div>`;
   }).join("");
-  const domNow=getDominantStrat(currSess);
-  const domBanner=domNow?`
-    <div style="padding:4px 8px;background:#7eb8ff12;border-bottom:1px solid var(--b1);display:flex;align-items:center;gap:6px">
-      <span style="font-size:7px;color:#7eb8ff;font-weight:700;letter-spacing:1px">DOMINANT</span>
-      <span style="flex:1;font-size:7.5px;color:var(--tx);font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${domNow.strat.name}</span>
-      <span style="font-size:6.5px;color:#26a69a;flex-shrink:0;white-space:nowrap">${domNow.wins}W \u00b7 ${(domNow.wr*100).toFixed(0)}%WR \u00b7 ${domNow.n}t</span>
+  // ── Top banner: show both dominant strats + current mode for active session ─
+  const topNow=getTop2BySession(currSess);
+  const modeNow=adaptiveBot.apexMode[currSess]||"CONSENSUS";
+  const fbRem=adaptiveBot.fallbackBarsRemaining[currSess]||0;
+  const modeText=modeNow==="FALLBACK"
+    ?`MODE: FALLBACK (${fbRem}b remaining)`
+    :"MODE: CONSENSUS";
+  const modeCol=modeNow==="FALLBACK"?"#f5a623":"#7eb8ff";
+  const domBanner=topNow.length?`
+    <div style="padding:5px 8px;background:#7eb8ff12;border-bottom:1px solid var(--b1);display:flex;flex-direction:column;gap:3px;align-items:flex-start;text-align:left">
+      <div style="display:flex;align-items:center;gap:6px;justify-content:flex-start">
+        <span style="font-size:7px;color:#7eb8ff;font-weight:700;letter-spacing:1px">DOMINANT</span>
+        <span style="font-size:6.5px;color:var(--tx3)">${currSess}</span>
+        <span style="font-size:6.5px;color:${topNow[0].exp>0?"#26a69a":"#ef5350"};white-space:nowrap">E ${topNow[0].exp.toFixed(2)} \u00b7 ${topNow[0].n}t</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:3px;padding:2px 0 2px 6px;border-left:2px solid #7eb8ff40;align-self:stretch">
+        ${topNow.map(s=>`<span style=\"font-size:8px;color:var(--tx);font-weight:700;line-height:1.35;word-break:break-word;text-align:left\">\u00b7 ${s.strat.name}</span>`).join("")}
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-start">
+        <span style="font-size:6.5px;color:${modeCol};font-weight:700;letter-spacing:0.5px">${modeText}</span>
+        <span style="font-size:6px;color:var(--tx3)">lookback ${apexLookbackBars()}b \u00b7 iv ${iv}</span>
+        ${topNow.length<2?'<span style="font-size:6px;color:var(--tx3)">single-strategy fallback (need 2 to qualify)</span>':''}
+      </div>
     </div>`:"";
   let html=`${domBanner}
   <div style="font-size:6px;font-weight:700;color:${unlocked?"#26a69a":"#f5a623"};padding:3px 8px;border-bottom:1px solid var(--b1)">
@@ -1839,9 +2068,10 @@ function renderAILeft(){
       const sess=t.sess||"NY",ss=SESS_STYLE[sess]||SESS_STYLE.NY,dec=mkt.tick<1?2:0;
       const slDist=Math.abs(t.entry-t.sl).toFixed(dec),tpDist=Math.abs(t.tp-t.entry).toFixed(dec);
       const rrDisp=(t.rr||2).toFixed(1),strat=STRATS.find(s=>s.id===t.stratUsed);
-      // ── show sessionTally in AI position footer (v3 port) ──────
-      const tally=ab.sessionTally[sess]||{w:0,l:0};
-      const tallyTot=tally.w+tally.l;
+      // ── show top-strategy expectancy summary in AI position footer ──
+      const topF=getTop2BySession(sess);
+      const expF=topF.length?topF[0].exp:0;
+      const tallyTot=topF.length?topF[0].n:0;
       return`<div class="pos-card">
         <div class="pos-header">
           <div><div style="display:flex;align-items:center;gap:5px;margin-bottom:2px"><span class="pos-mkt" style="color:${mkt.col}">${mkt.code}</span><span class="pos-sess" style="color:${ss.col};background:${ss.bg};border:1px solid ${ss.border}">${sess}</span></div><div class="pos-strat">AI \u00b7 ${strat?.name||t.stratUsed||"dominant"} \u00b7 conf${((t.conf||0)*100).toFixed(0)}%</div></div>
@@ -1853,7 +2083,7 @@ function renderAILeft(){
           <div class="pos-lv" style="border:1px solid #ef535030"><div class="pos-lv-label" style="color:#ef5350">STOP</div><div class="pos-lv-val" style="color:#ef5350">${t.sl.toFixed(dec)}</div><div class="pos-lv-dist" style="color:#ef5350">-${slDist}pt</div></div>
         </div>
         <div class="pos-footer">
-          <div><div class="pos-unr" style="color:${clr(unr)}">${f$(unr)}</div><div style="font-size:6px;color:var(--tx3)">${tallyTot>0?tally.w+"W/"+tally.l+"L in "+sess:"no "+sess+" history yet"}</div></div>
+          <div><div class="pos-unr" style="color:${clr(unr)}">${f$(unr)}</div><div style="font-size:6px;color:var(--tx3)">${tallyTot>0?"E "+expF.toFixed(2)+" \u00b7 "+tallyTot+"t in "+sess:"no "+sess+" history yet"}</div></div>
           <div class="pos-meta"><div style="color:var(--tx2)">RR ${rrDisp}:1</div></div>
         </div>
       </div>`;}).join("");
@@ -1879,18 +2109,187 @@ function renderAILeft(){
       <div style="flex:1;text-align:center;font-size:6px;color:var(--tx3);line-height:1.7">W / L<br><b style="font-size:9px;font-family:'Orbitron',sans-serif;color:var(--tx2)">${aiWins}/${aiLosses}</b></div>
       <div style="flex:1;text-align:center;font-size:6px;color:var(--tx3);line-height:1.7">Net P&amp;L<br><b style="font-size:9px;font-family:'Orbitron',sans-serif;color:${clr(aiPnl)}">${f$(aiPnl)}</b></div>
     </div>
-    <table class="mt"><thead><tr><th>MKT</th><th>SESS</th><th>DIR</th><th>PTS</th><th>P&amp;L</th><th>RES</th></tr></thead><tbody>${
+    <table class="mt"><thead><tr><th>MKT</th><th>SESS</th><th>DIR</th><th>MODE</th><th>PTS</th><th>P&amp;L</th><th>RES</th></tr></thead><tbody>${
     aiClosedTrades.slice(0,30).map(t=>{
       const mkt=MKTS.find(m=>m.code===t.code),_sl=t.sessLabel||t.sess||"NY",ss2=SESS_STYLE[primarySess(_sl)]||SESS_STYLE.NY;
+      const _mode=t.apexMode||"--";
+      const _modeCol=_mode==="FALLBACK"?"#f5a623":_mode==="CONSENSUS"?"#7eb8ff":"var(--tx4)";
       return`<tr style="background:${t.won?"#26a69a08":"#ef535008"}">
         <td><b style="color:${mkt?.col||"#fff"}">${t.code}</b></td>
         <td style="color:${ss2?.col||"var(--tx3)"};font-size:6.5px">${_sl}</td>
         <td style="color:${t.dir==="long"?"#26a69a80":"#ef535080"}">${t.dir==="long"?"\u25b2":"\u25bc"}</td>
+        <td style="color:${_modeCol};font-size:6px;font-weight:700">${_mode}</td>
         <td style="color:${clr(t.pts)}">${fPts(t.pts??0)}</td>
         <td><b style="color:${clr(t.pnlUSD)}">${f$(t.pnlUSD)}</b></td>
         <td style="color:${t.won?"#26a69a":"#ef5350"};font-weight:700">${t.won?"W":"L"}</td>
       </tr>`;}).join("")
     }</tbody></table>`;
+}
+
+// ── Apex fullscreen overlay ──────────────────────────────────
+let _apexFsSess=null;
+const APEX_FS_TABS=["ALL","NY","LONDON","ASIA","SYDNEY"];
+function openApexFullscreen(){
+  if(!_apexFsSess)_apexFsSess="ALL";
+  if(APEX_FS_TABS.indexOf(_apexFsSess)===-1)_apexFsSess="ALL";
+  const fs=document.getElementById("apex-fs");if(!fs)return;
+  fs.style.display="flex";
+  renderApexFullscreen();
+}
+function closeApexFullscreen(){
+  const fs=document.getElementById("apex-fs");if(!fs)return;
+  fs.style.display="none";
+}
+function _apexTradesForSess(sess){
+  const seen=new Set(),out=[];
+  const add=t=>{const k=`${t.openT??0}|${t.entry??0}|${t.code}`;if(!seen.has(k)){seen.add(k);out.push(t);}};
+  allClosed.filter(t=>t.botName==="Apex AI").forEach(add);
+  adaptiveBot.closedTrades.forEach(add);
+  const filtered=sess==="ALL"?out:out.filter(t=>(t.sess||"NY")===sess);
+  return filtered.sort((a,b)=>(a.closeT||a.openT)-(b.closeT||b.openT));
+}
+function renderApexFullscreen(){
+  const fs=document.getElementById("apex-fs");
+  if(!fs||fs.style.display==="none")return;
+  const sess=_apexFsSess||"NY";
+  // ── tabs
+  const tabsEl=document.getElementById("apex-fs-tabs");
+  tabsEl.innerHTML=APEX_FS_TABS.map(s=>{
+    const on=s===sess;
+    const accent=s==="ALL"?"#d0e0ff":"#7eb8ff";
+    const col=on?accent:"var(--tx2)",bg=on?accent+"18":"transparent";
+    return`<span class="apex-fs-tab" data-sess="${s}" style="cursor:pointer;padding:3px 12px;font-size:9px;font-weight:700;letter-spacing:1px;border:1px solid ${on?accent:"var(--b2)"};color:${col};background:${bg}">${s}</span>`;
+  }).join("");
+  tabsEl.querySelectorAll(".apex-fs-tab").forEach(b=>{
+    b.onclick=()=>{_apexFsSess=b.dataset.sess;renderApexFullscreen();};
+  });
+  // ── trades + stats
+  const trades=_apexTradesForSess(sess);
+  const wins=trades.filter(t=>t.won).length,losses=trades.length-wins;
+  const tot=trades.length,wr=tot?wins/tot:0;
+  const pnl=trades.reduce((s,t)=>s+(t.pnlUSD||0),0);
+  let ssWL;
+  if(sess==="ALL"){
+    ssWL={w:0,l:0};
+    Object.values(adaptiveBot.apexSessWL||{}).forEach(v=>{
+      ssWL.w+=v?.w||0;ssWL.l+=v?.l||0;
+    });
+  }else{
+    ssWL=adaptiveBot.apexSessWL?.[sess]||{w:0,l:0};
+  }
+  const consTrades=trades.filter(t=>t.apexMode==="CONSENSUS");
+  const fbTrades  =trades.filter(t=>t.apexMode==="FALLBACK");
+  const _wr=ts=>{const w=ts.filter(x=>x.won).length;return ts.length?w/ts.length:0;};
+  const _pnl=ts=>ts.reduce((s,x)=>s+(x.pnlUSD||0),0);
+  document.getElementById("apex-fs-stats").innerHTML=`
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;font-size:9px">
+      <div><div style="color:var(--tx3);font-size:7px;text-transform:uppercase;letter-spacing:1px">Trades</div><b style="font-size:14px">${tot}</b></div>
+      <div><div style="color:var(--tx3);font-size:7px;text-transform:uppercase;letter-spacing:1px">Win Rate</div><b style="font-size:14px;color:${wr>=0.5?"#26a69a":"#ef5350"}">${(wr*100).toFixed(1)}%</b></div>
+      <div><div style="color:var(--tx3);font-size:7px;text-transform:uppercase;letter-spacing:1px">W / L</div><b style="font-size:14px"><span style="color:#26a69a">${wins}</span> / <span style="color:#ef5350">${losses}</span></b></div>
+      <div><div style="color:var(--tx3);font-size:7px;text-transform:uppercase;letter-spacing:1px">Lifetime W/L</div><b style="font-size:14px;color:var(--tx2)">${ssWL.w}/${ssWL.l}</b></div>
+      <div><div style="color:var(--tx3);font-size:7px;text-transform:uppercase;letter-spacing:1px">Net P&amp;L</div><b style="font-size:14px;color:${clr(pnl)}">${f$(pnl)}</b></div>
+      <div><div style="color:var(--tx3);font-size:7px;text-transform:uppercase;letter-spacing:1px">Consensus / Fallback</div><b style="font-size:11px;color:#7eb8ff">${consTrades.length} (${(_wr(consTrades)*100).toFixed(0)}%)</b> / <b style="font-size:11px;color:#f5a623">${fbTrades.length} (${(_wr(fbTrades)*100).toFixed(0)}%)</b></div>
+    </div>
+    <div style="margin-top:6px;font-size:7px;color:var(--tx3)">Net P&amp;L by mode: <span style="color:${clr(_pnl(consTrades))}">CONSENSUS ${f$(_pnl(consTrades))}</span> \u00b7 <span style="color:${clr(_pnl(fbTrades))}">FALLBACK ${f$(_pnl(fbTrades))}</span></div>`;
+  // ── open Apex positions (live; filtered by selected session)
+  const openEl=document.getElementById("apex-fs-open");
+  if(openEl){
+    const openAll=Object.entries(adaptiveBot.openTrades||{}).map(([code,t])=>({code,t}));
+    const open=sess==="ALL"?openAll:openAll.filter(o=>(o.t.sess||"NY")===sess);
+    if(!open.length){
+      openEl.innerHTML=`<div style="font-size:8px;color:var(--tx3);text-align:left">No open Apex positions${sess==="ALL"?"":` in ${sess}`}</div>`;
+    }else{
+      openEl.innerHTML=`<div style="font-size:7px;color:#7eb8ff;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;font-weight:700">Open Positions (${open.length})</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px">${
+        open.map(({code,t})=>{
+          const m=MKTS.find(mk=>mk.code===code);
+          const dec=m&&m.tick<1?2:0;
+          const rawCur=bs(code).at(-1)?.c??t.entry;
+          const cur=t.dir==="long"?Math.max(t.sl,Math.min(t.tp,rawCur)):Math.min(t.sl,Math.max(t.tp,rawCur));
+          const pts=t.dir==="long"?cur-t.entry:t.entry-cur;
+          const unr=m?Math.round(pts*m.ptVal*100)/100:0;
+          const tSess=t.sess||"NY";
+          const tSessSty=SESS_STYLE[tSess]||SESS_STYLE.NY;
+          const mode=t.apexMode||"--";
+          const modeCol=mode==="FALLBACK"?"#f5a623":mode==="CONSENSUS"?"#7eb8ff":"var(--tx4)";
+          return`<div style="border:1px solid var(--b2);background:#0c0e15;padding:6px 8px;border-radius:2px">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+              <span style="color:${m?.col||"#fff"};font-weight:700;font-size:9px">${code}</span>
+              <span style="color:${tSessSty.col};background:${tSessSty.bg};border:1px solid ${tSessSty.border};padding:1px 4px;font-size:7px;font-weight:700">${tSess}</span>
+              <span style="color:${t.dir==="long"?"#26a69a":"#ef5350"};font-weight:700;font-size:9px">${t.dir==="long"?"\u25b2 LONG":"\u25bc SHORT"}</span>
+              <span style="color:${modeCol};font-weight:700;font-size:7px;margin-left:auto">${mode}</span>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;font-size:8px">
+              <div><div style="color:var(--tx3);font-size:6px;text-transform:uppercase;letter-spacing:1px">Target</div><b style="color:#26a69a">${t.tp.toFixed(dec)}</b></div>
+              <div><div style="color:var(--tx3);font-size:6px;text-transform:uppercase;letter-spacing:1px">Entry</div><b style="color:#dce8ff">${t.entry.toFixed(dec)}</b></div>
+              <div><div style="color:var(--tx3);font-size:6px;text-transform:uppercase;letter-spacing:1px">Stop</div><b style="color:#ef5350">${t.sl.toFixed(dec)}</b></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:4px;padding-top:4px;border-top:1px solid var(--b1)">
+              <div><div style="color:var(--tx3);font-size:6px;text-transform:uppercase;letter-spacing:1px">Unrealized</div><b style="font-size:10px;color:${clr(unr)}">${f$(unr)}</b></div>
+              <div style="font-size:6.5px;color:var(--tx3);margin-left:auto">cur ${rawCur.toFixed(dec)} \u00b7 RR ${(t.rr||2).toFixed(1)}:1</div>
+            </div>
+          </div>`;
+        }).join("")
+      }</div>`;
+    }
+  }
+  // ── chart: cumulative P&L
+  const chartEl=document.getElementById("apex-fs-chart");
+  if(trades.length<2){
+    chartEl.innerHTML=`<div style="color:var(--tx4);font-size:9px;text-align:center;padding-top:60px">No P&amp;L history${sess==="ALL"?"":` for ${sess}`}</div>`;
+  }else{
+    let cum=0;const pts=trades.map(t=>{cum+=t.pnlUSD||0;return{t:t.closeT||t.openT,v:cum};});
+    const minV=Math.min(...pts.map(p=>p.v),0),maxV=Math.max(...pts.map(p=>p.v),0);
+    const W=Math.max(400,chartEl.clientWidth||800),H=148;
+    const minT=pts[0].t,maxT=pts[pts.length-1].t;
+    const sx=t=>maxT===minT?W/2:8+(t-minT)/(maxT-minT)*(W-16);
+    const sy=v=>maxV===minV?H/2:H-8-((v-minV)/(maxV-minV))*(H-16);
+    const path=pts.map((p,i)=>`${i===0?"M":"L"}${sx(p.t).toFixed(1)},${sy(p.v).toFixed(1)}`).join(" ");
+    const zero=sy(0);
+    const dotPath=pts.map(p=>`<circle cx="${sx(p.t).toFixed(1)}" cy="${sy(p.v).toFixed(1)}" r="1.8" fill="${pnl>=0?"#26a69a":"#ef5350"}"/>`).join("");
+    chartEl.innerHTML=`<svg width="${W}" height="${H}" style="display:block">
+      <line x1="0" y1="${zero}" x2="${W}" y2="${zero}" stroke="var(--b2)" stroke-dasharray="3,3"/>
+      <path d="${path}" fill="none" stroke="${pnl>=0?"#26a69a":"#ef5350"}" stroke-width="1.5"/>
+      ${dotPath}
+      <text x="6" y="12" font-size="9" fill="var(--tx3)">${f$(maxV)}</text>
+      <text x="6" y="${H-4}" font-size="9" fill="var(--tx3)">${f$(minV)}</text>
+    </svg>`;
+  }
+  // ── trades table with MODE column
+  const tradesEl=document.getElementById("apex-fs-trades");
+  if(!trades.length){
+    tradesEl.innerHTML=`<div style="padding:20px;text-align:center;color:var(--tx3);font-size:9px">No closed Apex trades${sess==="ALL"?"":` in ${sess}`}</div>`;
+  }else{
+    const showSessCol=sess==="ALL";
+    tradesEl.innerHTML=`<table class="mt" style="font-size:8.5px"><thead><tr>
+      <th>WHEN</th><th>MKT</th>${showSessCol?"<th>SESS</th>":""}<th>DIR</th><th>MODE</th><th>STRAT</th>
+      <th>ENTRY</th><th>EXIT</th><th>SL</th><th>TP</th><th>PTS</th><th>P&amp;L</th><th>RES</th>
+    </tr></thead><tbody>${
+      trades.slice().reverse().map(t=>{
+        const m=MKTS.find(mk=>mk.code===t.code);const dec=m&&m.tick<1?2:0;
+        const mode=t.apexMode||"--";
+        const modeCol=mode==="FALLBACK"?"#f5a623":mode==="CONSENSUS"?"#7eb8ff":"var(--tx4)";
+        const stratLabel=t.stratUsed||"";
+        const tSess=t.sess||"NY";
+        const tSessSty=SESS_STYLE[tSess]||SESS_STYLE.NY;
+        return`<tr style="background:${t.won?"#26a69a08":"#ef535008"}">
+          <td style="font-size:7px;color:var(--tx3);white-space:nowrap">${fTs(t.closeT||t.openT)}</td>
+          <td><b style="color:${m?.col||"#fff"}">${t.code}</b></td>
+          ${showSessCol?`<td style="color:${tSessSty.col};font-size:7px;font-weight:700">${tSess}</td>`:""}
+          <td style="color:${t.dir==="long"?"#26a69a":"#ef5350"};font-weight:700">${t.dir==="long"?"\u25b2 LONG":"\u25bc SHORT"}</td>
+          <td style="color:${modeCol};font-weight:700">${mode}</td>
+          <td style="font-size:7px;color:var(--tx3);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${stratLabel}">${stratLabel}</td>
+          <td>${(t.entry??0).toFixed(dec)}</td>
+          <td>${(t.exitPx??0).toFixed(dec)}</td>
+          <td style="color:#ef535080">${(t.sl??0).toFixed(dec)}</td>
+          <td style="color:#26a69a80">${(t.tp??0).toFixed(dec)}</td>
+          <td style="color:${clr(t.pts)}">${fPts(t.pts??0)}</td>
+          <td><b style="color:${clr(t.pnlUSD)}">${f$(t.pnlUSD)}</b></td>
+          <td style="color:${t.won?"#26a69a":"#ef5350"};font-weight:700">${t.won?"W":"L"}</td>
+        </tr>`;
+      }).join("")
+    }</tbody></table>`;
+  }
 }
 
 function renderSigBars(){
@@ -1997,6 +2396,8 @@ document.querySelectorAll(".ivb").forEach(btn=>{
   btn.addEventListener("click",()=>{
     document.querySelectorAll(".ivb").forEach(b=>b.classList.remove("on"));
     btn.classList.add("on");iv=btn.dataset.iv;
+    // reset lookback signal cache on iv change (lookback window changes meaning)
+    adaptiveBot._lastSig={};
     candles={};liveQ={};sources={};prevPx={};dirty={};
     processedTs={};startupDone=false;prevBestTradeKeys=new Set();prevBestBotUid=null;soundSeeded=false;
     // ── reset AI open trades on iv switch; sessionTally / W-L intentionally preserved ──
@@ -2014,11 +2415,12 @@ refreshFull();
 setInterval(refreshFull,30000);
 setInterval(refreshQuote,750);
 refreshQuote();
-setInterval(()=>{renderLeft();renderSigBars();renderRight();renderAdaptive();},1500);
+setInterval(()=>{renderLeft();renderSigBars();renderRight();renderAdaptive();if(document.getElementById("apex-fs")?.style.display!=="none")renderApexFullscreen();},1500);
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&document.getElementById("apex-fs")?.style.display!=="none")closeApexFullscreen();});
 requestAnimationFrame(rafLoop);
 
 // ══════════════════════════════════════════════════════════════
-// AUTO-SAVE  --  ff_bots_state_v5.json
+// AUTO-SAVE  --  ff_bots_state_v6.json
 // Reads and writes directly from/to disk on every GET/POST.
 // sessionTally persists across interval changes.
 // ══════════════════════════════════════════════════════════════
@@ -2041,6 +2443,14 @@ function _serializeState(){
     adaptiveBot:{
       wins:adaptiveBot.wins, losses:adaptiveBot.losses,
       sessionTally:adaptiveBot.sessionTally,
+      apexMode:adaptiveBot.apexMode,
+      barsSinceLastTrade:adaptiveBot.barsSinceLastTrade,
+      fallbackBarsRemaining:adaptiveBot.fallbackBarsRemaining,
+      apexSessWL:adaptiveBot.apexSessWL,
+      _lastSig:adaptiveBot._lastSig,
+      apexPaused:adaptiveBot.apexPaused,
+      consecLosses:adaptiveBot.consecLosses,
+      _lastDomId:adaptiveBot._lastDomId,
       closedTrades:adaptiveBot.closedTrades.slice(-200),
       openTrades:adaptiveBot.openTrades
     },
@@ -2051,7 +2461,7 @@ function _serializeState(){
 async function saveState(){
   try{
     const body=JSON.stringify(_serializeState());
-    await fetch("/api/state",{
+    await fetch("/api/state/v6",{
       method:"POST",
       headers:{"Content-Type":"application/json"},
       body,
@@ -2064,7 +2474,7 @@ async function saveState(){
 
 async function restoreState(){
   try{
-    const r=await fetch("/api/state",{signal:AbortSignal.timeout(5000)});
+    const r=await fetch("/api/state/v6",{signal:AbortSignal.timeout(5000)});
     if(!r.ok)return;
     const s=await r.json();
     if(!s||!s.savedAt)return;
@@ -2079,17 +2489,41 @@ async function restoreState(){
     if(s.pendingSignals) Object.assign(pendingSignals, s.pendingSignals);
 
     if(Array.isArray(s.bots)){
-      s.bots.forEach(saved=>{
-        const strat=STRATS.find(st=>st.id===saved.stratId);if(!strat)return;
-        let bot=bots.find(b=>b.strat.id===saved.stratId&&b.wave===saved.wave);
-        if(!bot){
-          bot={uid:saved.uid,name:saved.name,strat,wave:saved.wave,
-               balance:50000,openTrades:{},closedTrades:[],wins:0,losses:0,
-               killed:false,killReason:"",_sessWins:0,_sessLosses:0};
-          bots.push(bot);
+      // ── group saved entries by stratId (older saves may contain duplicates
+      //    from the prior wave-based bug); merge closedTrades, keep highest wave.
+      const grouped={};
+      s.bots.forEach(sv=>{
+        if(!sv||!sv.stratId)return;
+        const g=grouped[sv.stratId]||(grouped[sv.stratId]={
+          stratId:sv.stratId,wave:0,uid:sv.uid,name:sv.name,balance:sv.balance,
+          wins:0,losses:0,_sessWins:0,_sessLosses:0,killed:false,killReason:"",
+          closedTrades:[],openTrades:{}
+        });
+        // pick the highest-wave entry as canonical for stats fields
+        if((sv.wave||1)>=(g.wave||0)){
+          g.wave=sv.wave||1;
+          g.uid=sv.uid;
+          g.name=sv.name||g.name;
+          g.balance=sv.balance??g.balance;
+          g.wins=sv.wins??g.wins;
+          g.losses=sv.losses??g.losses;
+          g._sessWins=sv._sessWins??g._sessWins;
+          g._sessLosses=sv._sessLosses??g._sessLosses;
+          g.killed=sv.killed??false;
+          g.killReason=sv.killReason??"";
+          g.openTrades=sv.openTrades||{};
         }
-        bot.uid          = saved.uid;
-        bot.name         = saved.name;
+        // closedTrades: merge across all waves (history is shared per-strat)
+        if(Array.isArray(sv.closedTrades))g.closedTrades=g.closedTrades.concat(sv.closedTrades);
+      });
+      Object.values(grouped).forEach(saved=>{
+        const strat=STRATS.find(st=>st.id===saved.stratId);if(!strat)return;
+        // single bot per strategy — match by stratId only, never push
+        let bot=bots.find(b=>b.strat.id===saved.stratId);
+        if(!bot)return; // strat no longer in STRATS — skip
+        bot.uid          = saved.uid          ?? bot.uid;
+        bot.wave         = saved.wave         ?? bot.wave;
+        bot.name         = saved.name         ?? `${strat.name} W${bot.wave}`;
         bot.balance      = saved.balance      ?? bot.balance;
         bot.wins         = saved.wins         ?? 0;
         bot.losses       = saved.losses       ?? 0;
@@ -2097,9 +2531,38 @@ async function restoreState(){
         bot.killReason   = saved.killReason   ?? "";
         bot._sessWins    = saved._sessWins    ?? 0;
         bot._sessLosses  = saved._sessLosses  ?? 0;
-        bot.closedTrades = saved.closedTrades ?? [];
+        // dedupe closedTrades by (openT|entry|code) so re-merges don't grow it
+        const seen=new Set(),dedup=[];
+        (saved.closedTrades||[]).forEach(t=>{
+          const k=`${t.openT??0}|${t.entry??0}|${t.code}`;
+          if(!seen.has(k)){seen.add(k);dedup.push(t);}
+        });
+        bot.closedTrades = dedup.slice(-200);
         bot.openTrades   = saved.openTrades   ?? {};
       });
+      // post-restore safety: collapse any duplicate stratId entries that may
+      // have crept into bots[] from older builds.
+      const byStrat={};
+      const keep=[];
+      bots.forEach(b=>{
+        const id=b.strat?.id;if(!id)return;
+        if(!byStrat[id]){byStrat[id]=b;keep.push(b);return;}
+        // duplicate: merge closedTrades, keep highest wave on the canonical bot
+        const can=byStrat[id];
+        if((b.wave||1)>(can.wave||1)){
+          can.wave=b.wave;can.name=b.name;can.uid=b.uid;
+          can.balance=b.balance;can.killed=b.killed;can.killReason=b.killReason;
+          can._sessWins=b._sessWins;can._sessLosses=b._sessLosses;
+          can.wins=b.wins;can.losses=b.losses;
+        }
+        const seen2=new Set();
+        const merged=[...(can.closedTrades||[]),...(b.closedTrades||[])].filter(t=>{
+          const k=`${t.openT??0}|${t.entry??0}|${t.code}`;
+          if(seen2.has(k))return false;seen2.add(k);return true;
+        });
+        can.closedTrades=merged.slice(-200);
+      });
+      if(keep.length!==bots.length){bots.length=0;keep.forEach(b=>bots.push(b));}
       uid=Math.max(...bots.map(b=>b.uid),uid);
     }
 
@@ -2108,10 +2571,47 @@ async function restoreState(){
       adaptiveBot.losses       = s.adaptiveBot.losses       ?? 0;
       adaptiveBot.closedTrades = s.adaptiveBot.closedTrades ?? [];
       adaptiveBot.openTrades   = s.adaptiveBot.openTrades   ?? {};
-      // ── restore per-session tally ─────────────────────────────
+      // ── restore per-session per-strategy expectancy tally ─────
+      // tolerate old W/L shape ({NY:{w,l}}); reset such sessions to empty.
       if(s.adaptiveBot.sessionTally){
-        Object.assign(adaptiveBot.sessionTally, s.adaptiveBot.sessionTally);
+        Object.keys(adaptiveBot.sessionTally).forEach(sess=>{
+          const v=s.adaptiveBot.sessionTally[sess];
+          if(!v||typeof v!=="object"){adaptiveBot.sessionTally[sess]={};return;}
+          // detect old shape: top-level w/l keys
+          if("w" in v||"l" in v){adaptiveBot.sessionTally[sess]={};return;}
+          adaptiveBot.sessionTally[sess]={};
+          Object.keys(v).forEach(stratId=>{
+            const slot=v[stratId];
+            if(!slot||typeof slot!=="object")return;
+            adaptiveBot.sessionTally[sess][stratId]={
+              wins         :slot.wins         ??0,
+              losses       :slot.losses       ??0,
+              totalWinPts  :slot.totalWinPts  ??0,
+              totalLossPts :slot.totalLossPts ??0
+            };
+          });
+        });
       }
+      // restore apex mode + counters (best-effort; defaults preserved)
+      ["apexMode","barsSinceLastTrade","fallbackBarsRemaining"].forEach(key=>{
+        const v=s.adaptiveBot[key];
+        if(v&&typeof v==="object")Object.assign(adaptiveBot[key],v);
+      });
+      // restore per-session Apex W/L counters
+      if(s.adaptiveBot.apexSessWL&&typeof s.adaptiveBot.apexSessWL==="object"){
+        Object.keys(adaptiveBot.apexSessWL).forEach(k=>{
+          const v=s.adaptiveBot.apexSessWL[k];
+          if(v&&typeof v==="object"){adaptiveBot.apexSessWL[k]={w:v.w??0,l:v.l??0};}
+        });
+      }
+      // restore lookback signal cache (may be stale; harmless — cleared on iv change)
+      if(s.adaptiveBot._lastSig&&typeof s.adaptiveBot._lastSig==="object"){
+        adaptiveBot._lastSig=Object.assign({},s.adaptiveBot._lastSig);
+      }
+      // restore preserved placeholder fields
+      if("apexPaused"   in s.adaptiveBot)adaptiveBot.apexPaused   =s.adaptiveBot.apexPaused;
+      if("consecLosses" in s.adaptiveBot)adaptiveBot.consecLosses =s.adaptiveBot.consecLosses;
+      if("_lastDomId"   in s.adaptiveBot)adaptiveBot._lastDomId   =s.adaptiveBot._lastDomId;
     }
 
     if(s.processedTs) Object.assign(processedTs, s.processedTs);
@@ -2169,7 +2669,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         # ── AUTO-SAVE: read directly from disk ────────────────────────────────
-        elif path == "/api/state":
+        elif path == "/api/state/v6":
             data = _load_state_from_disk()
             if data:
                 body = json.dumps(data).encode("utf-8")
@@ -2190,7 +2690,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     # ── AUTO-SAVE: write directly to disk ─────────────────────────────────────
     def do_POST(self):
         path = self.path.split("?")[0]
-        if path == "/api/state":
+        if path == "/api/state/v6":
             length = int(self.headers.get("Content-Length", 0))
             if length > 0:
                 raw = self.rfile.read(length)
@@ -2244,7 +2744,7 @@ if __name__ == "__main__":
         except Exception:
             pass
     _safe("")
-    _safe("  FF ELITE BOTS v5  --  8 Markets  --  4 Index Pairs  --  Auto-Save")
+    _safe("  FF ELITE BOTS v6  --  8 Markets  --  4 Index Pairs  --  Auto-Save")
     _safe("  =================================================================")
     _safe("  S&P 500  : ES  / MES   (E-mini & Micro)")
     _safe("  Nasdaq   : NQ  / MNQ   (E-mini & Micro)")
