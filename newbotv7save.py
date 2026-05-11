@@ -9,9 +9,7 @@ FF ELITE BOTS v7.0  --  8 Markets  --  4 Index Pairs  --  Auto-Save
   Strategies : 34 session-aware bots (Asia / London / NY / Sydney)
                25 standalone (Apex-eligible) + 9 combo (apexExclude)
   Data       : Yahoo Finance v8 OHLC + v7 quotes  ->  Stooq fallback
-  State file : ff_bots_state_v7.json   (NEW for v7.0 — v6 state file
-               ff_bots_state_v6.json is preserved untouched on disk for
-               rollback; v7 starts clean and accumulates its own history)
+  State file : ff_bots_state_v7.json
 
 ===============================================================================
   VERSION HISTORY
