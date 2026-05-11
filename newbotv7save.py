@@ -6,7 +6,8 @@ FF ELITE BOTS v7.0  --  8 Markets  --  4 Index Pairs  --  Auto-Save
   python run.py   (Windows CMD, PowerShell, Mac, Linux -- no pip needed)
 
   Markets    : ES/MES  NQ/MNQ  YM/MYM  RTY/M2K
-  Strategies : 17 session-aware bots (Asia / London / NY)
+  Strategies : 34 session-aware bots (Asia / London / NY / Sydney)
+               25 standalone (Apex-eligible) + 9 combo (apexExclude)
   Data       : Yahoo Finance v8 OHLC + v7 quotes  ->  Stooq fallback
   State file : ff_bots_state_v7.json   (NEW for v7.0 — v6 state file
                ff_bots_state_v6.json is preserved untouched on disk for
@@ -357,7 +358,7 @@ HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>FF Elite Bots v6</title>
+<title>FF Elite Bots v7</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@700;900&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
@@ -646,10 +647,10 @@ table.mt tr:hover td{background:var(--p2)}
       <span style="color:#f06292">M2K</span> $5/pt &middot; 0.10 tick<br>
     </div>
     <div class="ph" style="border-top:1px solid var(--b2)">Suspend / Revive</div>
-    <div class="rsect" style="font-size:7.5px">WR &lt;25% after 20 &rarr; suspended<br>Revives fresh at each new session<br>No wave spawning &mdash; all 17 run always</div>
+    <div class="rsect" style="font-size:7.5px">WR &lt;25% after 20 &rarr; suspended<br>Revives fresh at each new session<br>No wave spawning &mdash; all 34 run always</div>
   </div>
 </div>
-<div id="log"><span class="lc info">FF Elite Bots v6 &mdash; 8 markets &mdash; 4 index pairs &mdash; 17 session-aware strategies</span></div>
+<div id="log"><span class="lc info">FF Elite Bots v7 &mdash; 8 markets &mdash; 4 index pairs &mdash; 34 session-aware strategies (25 Apex-eligible + 9 combo)</span></div>
 </div>
 
 <div id="chart-tooltip"></div>
@@ -3363,14 +3364,14 @@ if __name__ == "__main__":
         except Exception:
             pass
     _safe("")
-    _safe("  FF ELITE BOTS v6  --  8 Markets  --  4 Index Pairs  --  Auto-Save")
+    _safe("  FF ELITE BOTS v7  --  8 Markets  --  4 Index Pairs  --  Auto-Save")
     _safe("  =================================================================")
     _safe("  S&P 500  : ES  / MES   (E-mini & Micro)")
     _safe("  Nasdaq   : NQ  / MNQ   (E-mini & Micro)")
     _safe("  Dow Jones: YM  / MYM   (E-mini & Micro)")
     _safe("  Russell  : RTY / M2K   (E-mini & Micro)")
     _safe("")
-    _safe("  Strategies : 17 session-aware bots (Asia / London / NY)")
+    _safe("  Strategies : 34 session-aware bots (Asia/London/NY/Sydney) -- 25 standalone + 9 combo")
     _safe("  Data       : Yahoo Finance v8 OHLC + v7 quotes -> Stooq")
     _safe("")
     # ── AUTO-SAVE: report file status on startup ──────────────────────────────
