@@ -608,25 +608,25 @@ table.mt tr:hover td{background:var(--p2)}
     </div>
     <div id="apex-fs-trades" style="flex:1;overflow-y:auto;padding:0 14px 10px"></div>
   </div>
-  <!-- ── Win Rate fullscreen overlay (3 columns: standalones / combos / leaderboard) ── -->
+  <!-- ── Win Rate fullscreen overlay (3 columns: leaderboard / combos / session×market) ── -->
   <div id="wr-fs" style="display:none;position:fixed;inset:0;background:#0c0e15f2;z-index:9999;flex-direction:column;font-family:inherit">
     <div style="display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--b2);background:#0a0c12">
       <span style="font-size:11px;color:#26a69a;font-weight:700;letter-spacing:2px;flex:1">&#x2696; WIN RATE &mdash; FULLSCREEN</span>
-      <span style="font-size:8px;color:var(--tx3);letter-spacing:1px">STANDALONE &nbsp;|&nbsp; COMBO &nbsp;|&nbsp; LEADERBOARD</span>
+      <span style="font-size:8px;color:var(--tx3);letter-spacing:1px">LEADERBOARD &nbsp;|&nbsp; COMBO &nbsp;|&nbsp; SESSION &times; MARKET</span>
       <span onclick="closeWRFullscreen()" style="cursor:pointer;color:var(--tx2);padding:3px 10px;border:1px solid var(--b2);font-size:9px" title="Close">&#x2715; CLOSE</span>
     </div>
     <div style="flex:1;display:flex;overflow:hidden">
       <div style="flex:1;display:flex;flex-direction:column;border-right:1px solid var(--b2);min-width:0">
-        <div class="ph" style="padding:6px 12px;border-bottom:1px solid var(--b2);background:#1a2e1a08">Standalone &mdash; Apex-eligible <span id="wr-fs-std-count" style="margin-left:auto;color:var(--tx3);font-weight:normal"></span></div>
-        <div id="wr-fs-standalones" style="flex:1;overflow-y:auto"></div>
+        <div class="ph" style="padding:6px 12px;border-bottom:1px solid var(--b2);background:#f5a62308">Leaderboard &mdash; Score Rank <span id="wr-fs-lb-count" style="margin-left:auto;color:var(--tx3);font-weight:normal"></span></div>
+        <div id="wr-fs-leaderboard" style="flex:1;overflow-y:auto"></div>
       </div>
       <div style="flex:1;display:flex;flex-direction:column;border-right:1px solid var(--b2);min-width:0">
-        <div class="ph" style="padding:6px 12px;border-bottom:1px solid var(--b2);background:#7eb8ff08">Combo &mdash; apexExclude <span id="wr-fs-combo-count" style="margin-left:auto;color:var(--tx3);font-weight:normal"></span></div>
+        <div class="ph" style="padding:6px 12px;border-bottom:1px solid var(--b2);background:#7eb8ff08">Combo <span id="wr-fs-combo-count" style="margin-left:auto;color:var(--tx3);font-weight:normal"></span></div>
         <div id="wr-fs-combos" style="flex:1;overflow-y:auto"></div>
       </div>
       <div style="flex:1;display:flex;flex-direction:column;min-width:0">
-        <div class="ph" style="padding:6px 12px;border-bottom:1px solid var(--b2);background:#f5a62308">Leaderboard &mdash; Score Rank</div>
-        <div id="wr-fs-leaderboard" style="flex:1;overflow-y:auto"></div>
+        <div class="ph" style="padding:6px 12px;border-bottom:1px solid var(--b2);background:#1a2e1a08">Session &times; Market &mdash; Best WR</div>
+        <div id="sess-best-sect" style="flex:1;overflow-y:auto"></div>
       </div>
     </div>
   </div>
@@ -650,7 +650,6 @@ table.mt tr:hover td{background:var(--p2)}
       <span>Win Rate</span>
       <span id="wr-expand-btn" onclick="openWRFullscreen()" title="Open Win Rate fullscreen view" style="margin-left:auto;cursor:pointer;font-size:11px;line-height:1;color:#7eb8ff;padding:3px 7px;border:1px solid #7eb8ff60;background:#7eb8ff12;border-radius:2px;letter-spacing:0">&#x26F6;</span>
     </div>
-    <div id="sess-best-sect" style="border-bottom:1px solid var(--b2)"></div>
     <div id="blist"></div>
     <div class="ph" style="border-top:1px solid var(--b2)">Sources</div>
     <div id="srcsect" class="rsect"></div>
@@ -3060,19 +3059,18 @@ function _wrFsRow(b,bb){
 function renderWRFullscreen(){
   const fs=document.getElementById("wr-fs");if(!fs||fs.style.display==="none")return;
   const bb=bestBot();
-  const standalones=bots.filter(b=>!b.strat.apexExclude);
-  const combos     =bots.filter(b=> b.strat.apexExclude);
-  const byScore    =(a,b2)=>score(b2)-score(a);
-  const stdEl=document.getElementById("wr-fs-standalones");
-  const cmbEl=document.getElementById("wr-fs-combos");
-  const lbEl =document.getElementById("wr-fs-leaderboard");
-  const stdCnt=document.getElementById("wr-fs-std-count");
+  const combos =bots.filter(b=>b.strat.apexExclude);
+  const byScore=(a,b2)=>score(b2)-score(a);
+  const cmbEl =document.getElementById("wr-fs-combos");
+  const lbEl  =document.getElementById("wr-fs-leaderboard");
   const cmbCnt=document.getElementById("wr-fs-combo-count");
-  if(stdEl)stdEl.innerHTML=[...standalones].sort(byScore).map(b=>_wrFsRow(b,bb)).join("");
-  if(cmbEl)cmbEl.innerHTML=[...combos     ].sort(byScore).map(b=>_wrFsRow(b,bb)).join("");
-  if(lbEl) lbEl .innerHTML=[...bots       ].sort(byScore).map(b=>_wrFsRow(b,bb)).join("");
-  if(stdCnt)stdCnt.textContent=`${standalones.length} strats`;
+  const lbCnt =document.getElementById("wr-fs-lb-count");
+  if(cmbEl)cmbEl.innerHTML=[...combos].sort(byScore).map(b=>_wrFsRow(b,bb)).join("");
+  if(lbEl) lbEl .innerHTML=[...bots  ].sort(byScore).map(b=>_wrFsRow(b,bb)).join("");
   if(cmbCnt)cmbCnt.textContent=`${combos.length} strats`;
+  if(lbCnt) lbCnt .textContent=`${bots.length} strats`;
+  // ── Session × Market column (#sess-best-sect) is updated by
+  //    renderAdaptive() on the same 1.5s tick. No work needed here.
 }
 
 function addLog(msg,type="info"){
