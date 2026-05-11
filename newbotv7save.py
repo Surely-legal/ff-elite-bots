@@ -608,6 +608,28 @@ table.mt tr:hover td{background:var(--p2)}
     </div>
     <div id="apex-fs-trades" style="flex:1;overflow-y:auto;padding:0 14px 10px"></div>
   </div>
+  <!-- ── Win Rate fullscreen overlay (3 columns: standalones / combos / leaderboard) ── -->
+  <div id="wr-fs" style="display:none;position:fixed;inset:0;background:#0c0e15f2;z-index:9999;flex-direction:column;font-family:inherit">
+    <div style="display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--b2);background:#0a0c12">
+      <span style="font-size:11px;color:#26a69a;font-weight:700;letter-spacing:2px;flex:1">&#x2696; WIN RATE &mdash; FULLSCREEN</span>
+      <span style="font-size:8px;color:var(--tx3);letter-spacing:1px">STANDALONE &nbsp;|&nbsp; COMBO &nbsp;|&nbsp; LEADERBOARD</span>
+      <span onclick="closeWRFullscreen()" style="cursor:pointer;color:var(--tx2);padding:3px 10px;border:1px solid var(--b2);font-size:9px" title="Close">&#x2715; CLOSE</span>
+    </div>
+    <div style="flex:1;display:flex;overflow:hidden">
+      <div style="flex:1;display:flex;flex-direction:column;border-right:1px solid var(--b2);min-width:0">
+        <div class="ph" style="padding:6px 12px;border-bottom:1px solid var(--b2);background:#1a2e1a08">Standalone &mdash; Apex-eligible <span id="wr-fs-std-count" style="margin-left:auto;color:var(--tx3);font-weight:normal"></span></div>
+        <div id="wr-fs-standalones" style="flex:1;overflow-y:auto"></div>
+      </div>
+      <div style="flex:1;display:flex;flex-direction:column;border-right:1px solid var(--b2);min-width:0">
+        <div class="ph" style="padding:6px 12px;border-bottom:1px solid var(--b2);background:#7eb8ff08">Combo &mdash; apexExclude <span id="wr-fs-combo-count" style="margin-left:auto;color:var(--tx3);font-weight:normal"></span></div>
+        <div id="wr-fs-combos" style="flex:1;overflow-y:auto"></div>
+      </div>
+      <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+        <div class="ph" style="padding:6px 12px;border-bottom:1px solid var(--b2);background:#f5a62308">Leaderboard &mdash; Score Rank</div>
+        <div id="wr-fs-leaderboard" style="flex:1;overflow-y:auto"></div>
+      </div>
+    </div>
+  </div>
   <div id="center">
     <div id="cgrid"></div>
     <div id="tradepane">
@@ -624,7 +646,10 @@ table.mt tr:hover td{background:var(--p2)}
     </div>
   </div>
   <div id="right">
-    <div class="ph">Leaderboard</div>
+    <div class="ph" style="display:flex;align-items:center;gap:6px">
+      <span>Win Rate</span>
+      <span id="wr-expand-btn" onclick="openWRFullscreen()" title="Open Win Rate fullscreen view" style="margin-left:auto;cursor:pointer;font-size:11px;line-height:1;color:#7eb8ff;padding:3px 7px;border:1px solid #7eb8ff60;background:#7eb8ff12;border-radius:2px;letter-spacing:0">&#x26F6;</span>
+    </div>
     <div id="sess-best-sect" style="border-bottom:1px solid var(--b2)"></div>
     <div id="blist"></div>
     <div class="ph" style="border-top:1px solid var(--b2)">Sources</div>
@@ -2961,7 +2986,7 @@ function renderAllTrades(){
 
 function renderRight(){
   const ab=live(),bb=bestBot();
-  document.getElementById("blist").innerHTML=[...bots].sort((a,b2)=>score(b2)-score(a)).slice(0,22)
+  document.getElementById("blist").innerHTML=[...bots].sort((a,b2)=>score(b2)-score(a))
     .map(b=>{
       const tot=b.wins+b.losses,wr=getWR(b),p=getPnl(b);
       const bc=b.killed?"#2a2e39":tot===0?"#4c525e":(wr>=0.5&&p>=0)?"#26a69a":(tot>0&&p>=0)?"#f5a623":"#ef5350";
@@ -3004,6 +3029,52 @@ function renderAdaptive(){
     </div>`;}).join("");
 }
 
+// ── Win Rate fullscreen overlay (3 cols: standalones / combos / leaderboard) ──
+function openWRFullscreen(){
+  const fs=document.getElementById("wr-fs");if(!fs)return;
+  fs.style.display="flex";
+  renderWRFullscreen();
+}
+function closeWRFullscreen(){
+  const fs=document.getElementById("wr-fs");if(!fs)return;
+  fs.style.display="none";
+}
+function _wrFsRow(b,bb){
+  const tot=b.wins+b.losses,wr=getWR(b),p=getPnl(b);
+  const bc=b.killed?"#2a2e39":tot===0?"#4c525e":(wr>=0.5&&p>=0)?"#26a69a":(tot>0&&p>=0)?"#f5a623":"#ef5350";
+  const isBest=b===bb,wrBar=Math.round(wr*100);
+  return`<div class="brow${b.killed?" dead":""}" onclick="openStratModal(bots.find(x=>x.uid===${b.uid}))" title="Click to view ${b.name} trades" style="font-size:9px;padding:5px 11px">
+    <span class="bdot" style="background:${bc};width:6px;height:6px"></span>
+    <div style="flex:1;min-width:0">
+      <div style="display:flex;justify-content:space-between;gap:4px">
+        <span style="color:${isBest?"var(--cy)":b.killed?"#363a45":"var(--tx2)"};font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${isBest?"\u2605 ":""}${b.name}</span>
+        <b style="color:${tot===0?"#4c525e":clr(p)};font-size:9px;flex-shrink:0">${tot===0?"no trades":f$(p)}</b>
+      </div>
+      <div style="display:flex;align-items:center;gap:4px;margin-top:1px">
+        <div class="bbar" style="height:3px"><div class="bfill" style="width:${wrBar}%;background:${bc}"></div></div>
+        <span style="color:${bc};font-size:8px;flex-shrink:0;min-width:38px;text-align:right">${tot===0?"--":fPct(wr)} &middot; ${tot}t</span>
+      </div>
+      ${b.killed?`<div style="color:#3e1c1c;font-size:7.5px;margin-top:1px">${b.killReason}</div>`:""}
+    </div></div>`;
+}
+function renderWRFullscreen(){
+  const fs=document.getElementById("wr-fs");if(!fs||fs.style.display==="none")return;
+  const bb=bestBot();
+  const standalones=bots.filter(b=>!b.strat.apexExclude);
+  const combos     =bots.filter(b=> b.strat.apexExclude);
+  const byScore    =(a,b2)=>score(b2)-score(a);
+  const stdEl=document.getElementById("wr-fs-standalones");
+  const cmbEl=document.getElementById("wr-fs-combos");
+  const lbEl =document.getElementById("wr-fs-leaderboard");
+  const stdCnt=document.getElementById("wr-fs-std-count");
+  const cmbCnt=document.getElementById("wr-fs-combo-count");
+  if(stdEl)stdEl.innerHTML=[...standalones].sort(byScore).map(b=>_wrFsRow(b,bb)).join("");
+  if(cmbEl)cmbEl.innerHTML=[...combos     ].sort(byScore).map(b=>_wrFsRow(b,bb)).join("");
+  if(lbEl) lbEl .innerHTML=[...bots       ].sort(byScore).map(b=>_wrFsRow(b,bb)).join("");
+  if(stdCnt)stdCnt.textContent=`${standalones.length} strats`;
+  if(cmbCnt)cmbCnt.textContent=`${combos.length} strats`;
+}
+
 function addLog(msg,type="info"){
   logE.unshift({msg,type,ts:Date.now()});logE=logE.slice(0,80);
   document.getElementById("log").innerHTML=logE.map(e=>
@@ -3033,8 +3104,12 @@ refreshFull();
 setInterval(refreshFull,30000);
 setInterval(refreshQuote,750);
 refreshQuote();
-setInterval(()=>{renderLeft();renderSigBars();renderRight();renderAdaptive();if(document.getElementById("apex-fs")?.style.display!=="none")renderApexFullscreen();},1500);
-document.addEventListener("keydown",e=>{if(e.key==="Escape"&&document.getElementById("apex-fs")?.style.display!=="none")closeApexFullscreen();});
+setInterval(()=>{renderLeft();renderSigBars();renderRight();renderAdaptive();if(document.getElementById("apex-fs")?.style.display!=="none")renderApexFullscreen();if(document.getElementById("wr-fs")?.style.display!=="none")renderWRFullscreen();},1500);
+document.addEventListener("keydown",e=>{
+  if(e.key!=="Escape")return;
+  if(document.getElementById("apex-fs")?.style.display!=="none")closeApexFullscreen();
+  if(document.getElementById("wr-fs")?.style.display!=="none")closeWRFullscreen();
+});
 requestAnimationFrame(rafLoop);
 
 // ══════════════════════════════════════════════════════════════
