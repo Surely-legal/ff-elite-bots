@@ -8,9 +8,9 @@ FF ELITE BOTS v7.0  --  8 Markets  --  4 Index Pairs  --  Auto-Save
   Markets    : ES/MES  NQ/MNQ  YM/MYM  RTY/M2K
   Strategies : 17 session-aware bots (Asia / London / NY)
   Data       : Yahoo Finance v8 OHLC + v7 quotes  ->  Stooq fallback
-  State file : ff_bots_state_v6.json   (preserved unchanged across v6.0->v7.0;
-               existing per-session tallies migrate forward and immediately
-               participate in PF ranking)
+  State file : ff_bots_state_v7.json   (NEW for v7.0 — v6 state file
+               ff_bots_state_v6.json is preserved untouched on disk for
+               rollback; v7 starts clean and accumulates its own history)
 
 ===============================================================================
   VERSION HISTORY
@@ -49,7 +49,13 @@ FF ELITE BOTS v7.0  --  8 Markets  --  4 Index Pairs  --  Auto-Save
       placed immediately after the liveIds.has(s.id) check. No other
       function or behavior changed.
     Note: this is a pure additive release. All v6.0-v6.9 strats and
-          their behavior are untouched. State file path unchanged.
+          their behavior are untouched.
+    * State file bumped to ff_bots_state_v7.json so v7 starts with a
+      clean slate for all 34 strats. The v6 state file
+      (ff_bots_state_v6.json) is left untouched on disk; renaming the
+      v7 STATE_FILE constant back to v6 is enough to roll back
+      cleanly. Empty per-session tallies will fill in as v7 strats
+      fire and trades close.
 
   v6.9  2026-05-04   Fix recordPerfAll multi-session credit fanout
     Fix: recordPerfAll() previously called getActiveSessions(openTs) and
@@ -157,7 +163,7 @@ PORT  = 7432
 CODES = ("ES","MES","NQ","MNQ","YM","MYM","RTY","M2K")
 
 # ── AUTO-SAVE ────────────────────────────────────────────────────────────────
-STATE_FILE     = "ff_bots_state_v6.json"
+STATE_FILE     = "ff_bots_state_v7.json"
 AUTOSAVE_EVERY = 30 * 60   # seconds
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -3033,7 +3039,7 @@ document.addEventListener("keydown",e=>{if(e.key==="Escape"&&document.getElement
 requestAnimationFrame(rafLoop);
 
 // ══════════════════════════════════════════════════════════════
-// AUTO-SAVE  --  ff_bots_state_v6.json
+// AUTO-SAVE  --  ff_bots_state_v7.json
 // Reads and writes directly from/to disk on every GET/POST.
 // sessionTally persists across interval changes.
 // ══════════════════════════════════════════════════════════════
