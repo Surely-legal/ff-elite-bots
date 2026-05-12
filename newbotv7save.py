@@ -824,6 +824,9 @@ const APEX_MIN_TRADES=10;
 const APEX_PF_MIN=1.0;
 const APEX_FALLBACK_BARS_THRESHOLD=20;
 const APEX_FALLBACK_DURATION=5;
+// v7.0: Apex may hold up to N concurrent open positions across markets
+// (still capped at 1 trade per market by the openTrades[mkt.code] keying).
+const APEX_MAX_CONCURRENT=2;
 // v6.8 strict revert: ADX_TREND_MIN / ADX_RANGE_MAX / REGIME_ALLOW removed.
 function _ensureSessSlot(sess,stratId){
   const t=adaptiveBot.sessionTally;
@@ -1912,9 +1915,10 @@ function processBots(){
         }
       }else if(atr[i]!=null){
         // ── Apex: enter new position (consensus / fallback) ───────
-        const aiHasPos=Object.keys(adaptiveBot.openTrades).length>0;
+        const aiOpenCount=Object.keys(adaptiveBot.openTrades).length;
+        const aiUnderCap=aiOpenCount<APEX_MAX_CONCURRENT;
         const sessOk=sess&&sess!=="MAINT"&&adaptiveBot.barsSinceLastTrade.hasOwnProperty(sess);
-        if(!aiHasPos&&aiFullyUnlocked()&&sessOk){
+        if(aiUnderCap&&aiFullyUnlocked()&&sessOk){
           // ── tick guard: only advance bar-counters on a NEW bar per market.
           // The live bar is re-evaluated each cycle; its counters must not
           // burn the consensus timeout or fallback duration.
