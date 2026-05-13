@@ -1952,13 +1952,25 @@ function processBots(){
           if(res){
             const entry=snap(bar.c,mkt.tick),mkConf=mkt.conf??1.0;
             const sessRRMult=sess==="NY"?1.0:sess==="LONDON"?0.9:sess==="ASIA"?0.75:0.70;
-            // STEP 1: always use the higher-expectancy strat's own SL/TP.
-            // res.strat1 is top-1 by expectancy (getTop2BySession sorts desc),
-            // so its levels are the "higher-expectancy" levels for both
-            // CONSENSUS and FALLBACK. Averaging removed (synthetic levels had
-            // no backtest behind them and were the cause of consensus losses).
-            const lv1=_stratLevels(res.strat1.strat,res.sig,entry,atr[i],sessRRMult,mkConf,mkt);
-            const sl=lv1.sl,tp=lv1.tp,rrFinal=lv1.rrMult;
+            // v7.0: Apex mirrors top-1 strat's EXACT open SL/TP prices on this
+            // market when available — Apex enters at market (current bar.c) but
+            // exits where top-1 would. Fallback: if top-1 has no matching open
+            // trade on this market (or wrong direction), compute fresh levels
+            // from top-1's params (v6.x behavior).
+            const top1Bot=bots.find(bb=>bb.strat.id===res.strat1.strat.id);
+            const top1Trade=top1Bot&&top1Bot.openTrades[mkt.code];
+            let sl,tp,rrFinal,levelSource;
+            if(top1Trade&&top1Trade.dir===res.sig){
+              sl=top1Trade.sl;tp=top1Trade.tp;
+              const slDist=Math.abs(entry-sl);
+              const tpDist=Math.abs(tp-entry);
+              rrFinal=slDist>0?(tpDist/slDist):Math.max(1.0,res.strat1.strat.rr*sessRRMult);
+              levelSource="MIRROR";
+            }else{
+              const lv1=_stratLevels(res.strat1.strat,res.sig,entry,atr[i],sessRRMult,mkConf,mkt);
+              sl=lv1.sl;tp=lv1.tp;rrFinal=lv1.rrMult;
+              levelSource="FRESH";
+            }
             const stratUsed=res.strat2
               ?`${res.strat1.strat.id}+${res.strat2.strat.id}`
               :res.strat1.strat.id;
@@ -1968,7 +1980,7 @@ function processBots(){
             adaptiveBot.openTrades[mkt.code]={dir:res.sig,entry,sl,tp,openT:bar.t,
               atr:atr[i],sess,sessLabel,conf:Math.min(1.0,mkConf),
               rr:rrFinal,votes:res.strat2?2:1,stratUsed,
-              apexMode:mode}; 
+              apexMode:mode,levelSource}; 
             // reset bars-since-last-trade for this session on entry
             adaptiveBot.barsSinceLastTrade[sess]=0;
           }
