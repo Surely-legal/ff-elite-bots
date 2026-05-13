@@ -1762,6 +1762,11 @@ function mkBot(s,wv){return{uid:++uid,name:`${s.name} W${wv}`,strat:s,wave:wv,ba
 bots=STRATS.map(s=>mkBot(s,1));
 const getPnl=b=>b.balance-50000;
 const getWR=b=>{const t=b.wins+b.losses;return t?b.wins/t:0;};
+// v7.0 break-even helpers: pts===0 trades carry result==="BE" and are excluded
+// from win-rate denominators. Old records (pre-v7) fall back to t.won.
+const _tIsWin =t=>t.result==="WIN" ||(t.result===undefined&& t.won);
+const _tIsLoss=t=>t.result==="LOSS"||(t.result===undefined&&!t.won);
+const _tIsBE  =t=>t.result==="BE";
 function score(b){
   const tot=b.wins+b.losses;if(tot===0)return 0;
   const wr=getWR(b),avgPnl=getPnl(b)/tot,pnlScore=Math.max(0,Math.min(1,avgPnl/500));
@@ -1833,21 +1838,29 @@ function processBots(){
             ex=snap(ex,mkt.tick);
             const pts=t.dir==="long"?ex-t.entry:t.entry-ex;
             const pnl=Math.round(pts*mkt.ptVal*100)/100;
+            // v7.0: pts===0 is BREAK EVEN — not counted as win or loss.
+            const be=pts===0;
+            if(be)won=false;
+            const result=be?"BE":won?"WIN":"LOSS";
             bot.balance=Math.round((bot.balance+pnl)*100)/100;
-            won?bot.wins++:bot.losses++;won?bot._sessWins++:bot._sessLosses++;totalClosed++;
+            if(!be){
+              won?bot.wins++:bot.losses++;
+              won?bot._sessWins++:bot._sessLosses++;
+            }
+            totalClosed++;
             // ── per-strategy expectancy tally for Apex selection ──
             // (idempotent: a trade is tallied at most once, in its open-session bucket)
-            if(!t._tallied){_sessTallyAdd(t.sess,bot.strat.id,won,pts);t._tallied=true;}
+            if(!be&&!t._tallied){_sessTallyAdd(t.sess,bot.strat.id,won,pts);t._tallied=true;}
             const rec={code:mkt.code,col:mkt.col,botName:bot.name,stratId:bot.strat.id,
               dir:t.dir,entry:t.entry,exitPx:ex,pts:Math.round(pts*100)/100,
-              pnlUSD:pnl,won,sl:t.sl,tp:t.tp,openT:t.openT,closeT:bar.t,atr:t.atr,
+              pnlUSD:pnl,won,result,sl:t.sl,tp:t.tp,openT:t.openT,closeT:bar.t,atr:t.atr,
               sess:t.sess,sessLabel:t.sessLabel||t.sess};
             bot.closedTrades=[...bot.closedTrades.slice(-199),rec];
             allClosed=[rec,...allClosed].slice(0,5000);
             delete bot.openTrades[mkt.code];
-            recordPerfAll(bot.strat.id,t.openT,mkt.code,won,pnl);
+            if(!be)recordPerfAll(bot.strat.id,t.openT,mkt.code,won,pnl);
             document.getElementById("tcl").textContent=totalClosed;
-            addLog(`${mkt.code} ${bot.name} ${won?"WIN":"LOSS"} ${f$(pnl)} (${fPts(pts)}) [${t.sessLabel||t.sess}]`,won?"win":"loss");
+            addLog(`${mkt.code} ${bot.name} ${result} ${f$(pnl)} (${fPts(pts)}) [${t.sessLabel||t.sess}]`,be?"info":won?"win":"loss");
             if(!bot._barClosedCodes)bot._barClosedCodes=new Set();
             bot._barClosedCodes.add(mkt.code);
             delete pendingSignals[`${bot.uid}_${mkt.code}`];
@@ -1893,14 +1906,21 @@ function processBots(){
           ex=snap(ex,mkt.tick);
           const pts=at.dir==="long"?ex-at.entry:at.entry-ex;
           const pnl=Math.round(pts*mkt.ptVal*100)/100;
-          won?adaptiveBot.wins++:adaptiveBot.losses++;totalClosed++;
+          // v7.0: pts===0 is BREAK EVEN — not counted as win or loss.
+          const be=pts===0;
+          if(be)won=false;
+          const result=be?"BE":won?"WIN":"LOSS";
+          if(!be){
+            won?adaptiveBot.wins++:adaptiveBot.losses++;
+          }
+          totalClosed++;
           const rec={code:mkt.code,col:mkt.col,botName:"Apex AI",stratId:"ADAPTIVE",
             dir:at.dir,entry:at.entry,exitPx:ex,pts:Math.round(pts*100)/100,
-            pnlUSD:pnl,won,sl:at.sl,tp:at.tp,openT:at.openT,closeT:bar.t,
+            pnlUSD:pnl,won,result,sl:at.sl,tp:at.tp,openT:at.openT,closeT:bar.t,
             atr:at.atr,sess:at.sess,sessLabel:at.sessLabel||at.sess,conf:at.conf,
             apexMode:at.apexMode||"CONSENSUS",stratUsed:at.stratUsed};
           // ── per-session Apex W/L (Apex's own trades only) ──
-          if(adaptiveBot.apexSessWL?.[at.sess]){
+          if(!be&&adaptiveBot.apexSessWL?.[at.sess]){
             won?adaptiveBot.apexSessWL[at.sess].w++:adaptiveBot.apexSessWL[at.sess].l++;
           }
           adaptiveBot.closedTrades=[...adaptiveBot.closedTrades.slice(-199),rec];
@@ -1908,9 +1928,9 @@ function processBots(){
           delete adaptiveBot.openTrades[mkt.code];
           // ── v6: mark bar-closed (Apex own trade — no sessionTally tally) ──
           adaptiveBot._barClosedCodes.add(mkt.code);
-          recordPerfAll("ADAPTIVE",at.openT,mkt.code,won,pnl);
+          if(!be)recordPerfAll("ADAPTIVE",at.openT,mkt.code,won,pnl);
           document.getElementById("tcl").textContent=totalClosed;
-          addLog(`AI ${mkt.code} ${won?"WIN":"LOSS"} ${f$(pnl)} [${at.sessLabel||at.sess}] conf:${((at.conf||0)*100).toFixed(0)}%`,won?"win":"loss");
+          addLog(`AI ${mkt.code} ${result} ${f$(pnl)} [${at.sessLabel||at.sess}] conf:${((at.conf||0)*100).toFixed(0)}%`,be?"info":won?"win":"loss");
         }
       }else if(atr[i]!=null){
         // ── Apex: enter new position (consensus / fallback) ───────
@@ -1997,14 +2017,21 @@ function processBots(){
       Object.entries(bot.openTrades).forEach(([code,t])=>{
         const mkt=MKTS.find(m=>m.code===code);if(!mkt)return;
         const ex=snap(liveQ[code]?.price||bs(code).at(-1)?.c||t.entry,mkt.tick);
-        const pts=t.dir==="long"?ex-t.entry:t.entry-ex,pnl=Math.round(pts*mkt.ptVal*100)/100,won=pts>0;
-        won?bot.wins++:bot.losses++;won?bot._sessWins++:bot._sessLosses++;totalClosed++;
+        const pts=t.dir==="long"?ex-t.entry:t.entry-ex,pnl=Math.round(pts*mkt.ptVal*100)/100;
+        // v7.0: pts===0 is BREAK EVEN — not counted as win or loss.
+        const be=pts===0,won=pts>0;
+        const result=be?"BE":won?"WIN":"LOSS";
+        if(!be){
+          won?bot.wins++:bot.losses++;
+          won?bot._sessWins++:bot._sessLosses++;
+        }
+        totalClosed++;
         const rec={code,col:mkt.col,botName:bot.name,stratId:bot.strat.id,
           dir:t.dir,entry:t.entry,exitPx:ex,pts:Math.round(pts*100)/100,
-          pnlUSD:pnl,won,sl:t.sl,tp:t.tp,openT:t.openT,closeT:Date.now(),atr:t.atr,sess:t.sess,sessLabel:t.sessLabel||t.sess};
+          pnlUSD:pnl,won,result,sl:t.sl,tp:t.tp,openT:t.openT,closeT:Date.now(),atr:t.atr,sess:t.sess,sessLabel:t.sessLabel||t.sess};
         bot.closedTrades=[...bot.closedTrades.slice(-199),rec];
         allClosed=[rec,...allClosed].slice(0,5000);
-        recordPerfAll(bot.strat.id,t.openT,code,won,pnl);
+        if(!be)recordPerfAll(bot.strat.id,t.openT,code,won,pnl);
       });
       bot.openTrades={};bot.killed=true;bot.killReason="WR<25% (revives next session)";
       addLog(`${bot.name} SUSPENDED (WR<25%) \u2014 revives at next session`,"kill");
@@ -2106,29 +2133,36 @@ function checkLiveExits(){
       if(closed){
         ex=snap(ex,mkt.tick);
         const pts=t.dir==="long"?ex-t.entry:t.entry-ex,pnl=Math.round(pts*mkt.ptVal*100)/100;
+        // v7.0: pts===0 is BREAK EVEN — not counted as win or loss.
+        const be=pts===0;
+        if(be)won=false;
+        const result=be?"BE":won?"WIN":"LOSS";
         const isAI=bot===adaptiveBot;
         if(!isAI)bot.balance=Math.round((bot.balance+pnl)*100)/100;
-        won?bot.wins++:bot.losses++;totalClosed++;
+        if(!be){
+          won?bot.wins++:bot.losses++;
+        }
+        totalClosed++;
         const rec={code,col:mkt.col,botName:bot.name,stratId:bot.strat?.id||"ADAPTIVE",
           dir:t.dir,entry:t.entry,exitPx:ex,pts:Math.round(pts*100)/100,
-          pnlUSD:pnl,won,sl:t.sl,tp:t.tp,openT:t.openT,closeT:Date.now(),
+          pnlUSD:pnl,won,result,sl:t.sl,tp:t.tp,openT:t.openT,closeT:Date.now(),
           atr:t.atr,sess:t.sess,sessLabel:t.sessLabel||t.sess,live:true,
           apexMode:isAI?(t.apexMode||"CONSENSUS"):undefined,
           stratUsed:isAI?t.stratUsed:undefined};
         // ── per-session Apex W/L on live exit ──
-        if(isAI&&adaptiveBot.apexSessWL?.[t.sess]){
+        if(!be&&isAI&&adaptiveBot.apexSessWL?.[t.sess]){
           won?adaptiveBot.apexSessWL[t.sess].w++:adaptiveBot.apexSessWL[t.sess].l++;
         }
         bot.closedTrades=[...bot.closedTrades.slice(-199),rec];
         allClosed=[rec,...allClosed].slice(0,5000);
         delete bot.openTrades[code];
-        recordPerfAll(rec.stratId,t.openT,code,won,pnl);
+        if(!be)recordPerfAll(rec.stratId,t.openT,code,won,pnl);
         // ── per-strategy expectancy tally for Apex selection (skip Apex's own combined trades) ──
         // (idempotent: a trade is tallied at most once, in its open-session bucket)
-        if(!isAI&&!t._tallied){_sessTallyAdd(t.sess,rec.stratId,won,rec.pts);t._tallied=true;}
+        if(!be&&!isAI&&!t._tallied){_sessTallyAdd(t.sess,rec.stratId,won,rec.pts);t._tallied=true;}
         document.getElementById("tcl").textContent=totalClosed;
         const tag=isAI?"AI ":"";
-        addLog(`${tag}${code} ${bot.name} ${won?"WIN":"LOSS"} ${f$(pnl)} [live]`,won?"win":"loss");
+        addLog(`${tag}${code} ${bot.name} ${result} ${f$(pnl)} [live]`,be?"info":won?"win":"loss");
         const mktObj=MKTS.find(m=>m.code===code);if(mktObj)dirty[mktObj.id]=true;
       }
     });
@@ -2476,7 +2510,10 @@ function openStratModal(bot){
     ?trades.map(t=>{
         const mkt=MKTS.find(m=>m.code===t.code),dec=mkt?.tick<1?2:0;
         const _sl=t.sessLabel||t.sess||"NY",ss2=SESS_STYLE[primarySess(_sl)]||SESS_STYLE.NY;
-        return`<tr style="background:${t.won?"#26a69a08":"#ef535008"}">
+        const _res=t.result||(t.won?"WIN":"LOSS");
+        const _resBg=_res==="WIN"?"#26a69a08":_res==="LOSS"?"#ef535008":"#7f7f7f10";
+        const _resCol=_res==="WIN"?"#26a69a":_res==="LOSS"?"#ef5350":"var(--tx3)";
+        return`<tr style="background:${_resBg}">
           <td><b style="color:${mkt?.col||"#fff"}">${t.code}</b></td>
           <td style="color:${ss2?.col||"var(--tx3)"};font-size:7px">${t.sessLabel||t.sess||"--"}</td>
           <td style="color:${t.dir==="long"?"#26a69a80":"#ef535080"}">${t.dir==="long"?"\u25b2 L":"\u25bc S"}</td>
@@ -2484,7 +2521,7 @@ function openStratModal(bot){
           <td style="color:var(--tx2)">${(t.exitPx??t.ex)?.toFixed(dec)??"--"}</td>
           <td style="color:${clr(t.pts)}">${fPts(t.pts??0)}</td>
           <td><b style="color:${clr(t.pnlUSD)}">${f$(t.pnlUSD)}</b></td>
-          <td style="color:${t.won?"#26a69a":"#ef5350"};font-weight:700">${t.won?"WIN":"LOSS"}</td>
+          <td style="color:${_resCol};font-weight:700">${_res}</td>
         </tr>`;}).join("")
     :`<tr><td colspan="8" style="text-align:center;color:var(--tx3);padding:20px;font-size:8px">No closed trades yet for this bot</td></tr>`;
   document.getElementById("strat-modal").classList.add("open");
@@ -2583,7 +2620,9 @@ function renderAILeft(){
   const badge=document.getElementById("ai-wr-badge");
   if(badge){
     const allAI=allClosed.filter(t=>t.botName==="Apex AI");
-    const allAITot=allAI.length,allAIWins=allAI.filter(t=>t.won).length,allAIWR=allAITot?allAIWins/allAITot:0;
+    const allAITot=allAI.length;
+    const allAIWins=allAI.filter(_tIsWin).length,allAILosses=allAI.filter(_tIsLoss).length;
+    const allAIDenom=allAIWins+allAILosses,allAIWR=allAIDenom?allAIWins/allAIDenom:0;
     if(unlocked)badge.innerHTML=`<span style="color:#26a69a">\u25cf LIVE \u00b7 ${allAITot>0?(allAIWR*100).toFixed(0)+"%WR \u00b7 "+allAITot+"t":"watching"}</span>`;
     else badge.innerHTML=`<span style="color:#f5a623">\u29d7 SCANNING \u00b7 ${foundCount}/4 sessions \u00b7 need 2</span>`;
   }
@@ -2687,8 +2726,9 @@ function renderAILeft(){
   aiClosedTrades.sort((a,b2)=>(b2.closeT||b2.openT)-(a.closeT||a.openT));
   if(!aiClosedTrades.length){tp.style.display="none";return;}
   tp.style.display="block";
-  const aiWins=aiClosedTrades.filter(t=>t.won).length,aiLosses=aiClosedTrades.filter(t=>!t.won).length;
-  const aiTot=aiClosedTrades.length,aiWR=aiTot?aiWins/aiTot:0,aiPnl=aiClosedTrades.reduce((s,t)=>s+(t.pnlUSD||0),0);
+  const aiWins=aiClosedTrades.filter(_tIsWin).length,aiLosses=aiClosedTrades.filter(_tIsLoss).length;
+  const aiTot=aiClosedTrades.length,aiWLDenom=aiWins+aiLosses;
+  const aiWR=aiWLDenom?aiWins/aiWLDenom:0,aiPnl=aiClosedTrades.reduce((s,t)=>s+(t.pnlUSD||0),0);
   tp.innerHTML=`
     <div style="padding:4px 8px;background:var(--p3);border-bottom:1px solid var(--b1);display:flex;gap:1px">
       <div style="flex:1;text-align:center;font-size:6px;color:var(--tx3);line-height:1.7">Trades<br><b style="font-size:9px;font-family:'Orbitron',sans-serif;color:var(--tx)">${aiTot}</b></div>
@@ -2701,14 +2741,17 @@ function renderAILeft(){
       const mkt=MKTS.find(m=>m.code===t.code),_sl=t.sessLabel||t.sess||"NY",ss2=SESS_STYLE[primarySess(_sl)]||SESS_STYLE.NY;
       const _mode=t.apexMode||"--";
       const _modeCol=_mode==="FALLBACK"?"#f5a623":_mode==="CONSENSUS"?"#7eb8ff":"var(--tx4)";
-      return`<tr style="background:${t.won?"#26a69a08":"#ef535008"}">
+      const _res=t.result||(t.won?"WIN":"LOSS"),_resShort=_res==="WIN"?"W":_res==="LOSS"?"L":"BE";
+      const _resBg=_res==="WIN"?"#26a69a08":_res==="LOSS"?"#ef535008":"#7f7f7f10";
+      const _resCol=_res==="WIN"?"#26a69a":_res==="LOSS"?"#ef5350":"var(--tx3)";
+      return`<tr style="background:${_resBg}">
         <td><b style="color:${mkt?.col||"#fff"}">${t.code}</b></td>
         <td style="color:${ss2?.col||"var(--tx3)"};font-size:6.5px">${_sl}</td>
         <td style="color:${t.dir==="long"?"#26a69a80":"#ef535080"}">${t.dir==="long"?"\u25b2":"\u25bc"}</td>
         <td style="color:${_modeCol};font-size:6px;font-weight:700">${_mode}</td>
         <td style="color:${clr(t.pts)}">${fPts(t.pts??0)}</td>
         <td><b style="color:${clr(t.pnlUSD)}">${f$(t.pnlUSD)}</b></td>
-        <td style="color:${t.won?"#26a69a":"#ef5350"};font-weight:700">${t.won?"W":"L"}</td>
+        <td style="color:${_resCol};font-weight:700">${_resShort}</td>
       </tr>`;}).join("")
     }</tbody></table>`;
 }
@@ -2809,8 +2852,8 @@ function renderApexFullscreen(){
   });
   // ── trades + stats
   const trades=_apexTradesForSess(sess);
-  const wins=trades.filter(t=>t.won).length,losses=trades.length-wins;
-  const tot=trades.length,wr=tot?wins/tot:0;
+  const wins=trades.filter(_tIsWin).length,losses=trades.filter(_tIsLoss).length;
+  const tot=trades.length,wlDenom=wins+losses,wr=wlDenom?wins/wlDenom:0;
   const pnl=trades.reduce((s,t)=>s+(t.pnlUSD||0),0);
   let ssWL;
   if(sess==="ALL"){
@@ -2823,7 +2866,7 @@ function renderApexFullscreen(){
   }
   const consTrades=trades.filter(t=>t.apexMode==="CONSENSUS");
   const fbTrades  =trades.filter(t=>t.apexMode==="FALLBACK");
-  const _wr=ts=>{const w=ts.filter(x=>x.won).length;return ts.length?w/ts.length:0;};
+  const _wr=ts=>{const w=ts.filter(_tIsWin).length,l=ts.filter(_tIsLoss).length;return (w+l)?w/(w+l):0;};
   const _pnl=ts=>ts.reduce((s,x)=>s+(x.pnlUSD||0),0);
   document.getElementById("apex-fs-stats").innerHTML=`
     <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;font-size:9px">
@@ -2929,7 +2972,10 @@ function renderApexFullscreen(){
         const stratLabel=t.stratUsed||"";
         const tSess=t.sess||"NY";
         const tSessSty=SESS_STYLE[tSess]||SESS_STYLE.NY;
-        return`<tr style="background:${t.won?"#26a69a08":"#ef535008"}">
+        const _res=t.result||(t.won?"WIN":"LOSS"),_resShort=_res==="WIN"?"W":_res==="LOSS"?"L":"BE";
+        const _resBg=_res==="WIN"?"#26a69a08":_res==="LOSS"?"#ef535008":"#7f7f7f10";
+        const _resCol=_res==="WIN"?"#26a69a":_res==="LOSS"?"#ef5350":"var(--tx3)";
+        return`<tr style="background:${_resBg}">
           <td style="font-size:7px;color:var(--tx3);white-space:nowrap">${fTs(t.closeT||t.openT)}</td>
           <td><b style="color:${m?.col||"#fff"}">${t.code}</b></td>
           ${showSessCol?`<td style="color:${tSessSty.col};font-size:7px;font-weight:700">${tSess}</td>`:""}
@@ -2942,7 +2988,7 @@ function renderApexFullscreen(){
           <td style="color:#26a69a80">${(t.tp??0).toFixed(dec)}</td>
           <td style="color:${clr(t.pts)}">${fPts(t.pts??0)}</td>
           <td><b style="color:${clr(t.pnlUSD)}">${f$(t.pnlUSD)}</b></td>
-          <td style="color:${t.won?"#26a69a":"#ef5350"};font-weight:700">${t.won?"W":"L"}</td>
+          <td style="color:${_resCol};font-weight:700">${_resShort}</td>
         </tr>`;
       }).join("")
     }</tbody></table>`;
@@ -2984,7 +3030,10 @@ function renderAllTrades(){
     ?merged.map(t=>{
         const mkt=MKTS.find(m=>m.code===t.code),dec=mkt?.tick<1?2:0;
         const _sl=t.sessLabel||t.sess||"NY",ss2=SESS_STYLE[primarySess(_sl)]||SESS_STYLE.NY;
-        return`<tr style="background:${t.won?"#26a69a08":"#ef535008"}">
+        const _res=t.result||(t.won?"WIN":"LOSS");
+        const _resBg=_res==="WIN"?"#26a69a08":_res==="LOSS"?"#ef535008":"#7f7f7f10";
+        const _resCol=_res==="WIN"?"#26a69a":_res==="LOSS"?"#ef5350":"var(--tx3)";
+        return`<tr style="background:${_resBg}">
           <td><b style="color:${mkt?.col||'#fff'}">${t.code}</b></td>
           <td style="color:#9c27b0;max-width:72px;overflow:hidden;text-overflow:ellipsis;font-size:7px">${t.botName?.replace(" W1","").replace(" W2","").replace(" W3","")}</td>
           <td style="color:${ss2?.col||'var(--tx3)'};font-size:7px">${t.sessLabel||t.sess||"--"}</td>
@@ -2993,7 +3042,7 @@ function renderAllTrades(){
           <td style="color:var(--tx2)">${(t.exitPx??t.ex)?.toFixed(dec)}</td>
           <td style="color:${clr(t.pts)}">${fPts(t.pts??0)}</td>
           <td><b style="color:${clr(t.pnlUSD)}">${f$(t.pnlUSD)}</b></td>
-          <td style="color:${t.won?"#26a69a":"#ef5350"}">${t.won?"WIN":"LOSS"}</td>
+          <td style="color:${_resCol}">${_res}</td>
         </tr>`;}).join("")
     :`<tr><td colspan="9" style="text-align:center;color:var(--tx3);padding:12px">Bots fire on crossover signals -- trades appear when SL or TP is hit on a real bar.</td></tr>`;
 }
