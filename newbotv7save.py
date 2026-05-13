@@ -918,23 +918,22 @@ function _recordStratSig(stratId,code,dir,barT){
   if(!stratId||!code||!dir)return;
   adaptiveBot._lastSig[`${stratId}|${code}`]={dir,barT};
 }
-// Consensus signal with lookback window: both top-2 strategies must have a
-// recorded signal in the same direction within `apexLookbackBars()` bars on
-// this market. Only the most recent signal per strategy is consulted.
-// v6.8 strict revert: requires top.length>=2 and r1.dir===r2.dir; no family
-// gate, no cross-family fallback, no regime filter. Single-strat trades only
-// happen via the FALLBACK MODE path (20-bar timeout + 5-bar duration).
+// v7.0: Consensus = both top-1 AND top-2 currently have an OPEN trade on this
+// market in the same direction. Stronger than cached-signal lookback because
+// trades persist while signals are transition-only — fixes the case where both
+// strats fire on different bars and the older signal expires before the second
+// confirms. (Previous: required cached signals within apexLookbackBars() of
+// curBarT.)
 function getApexConsensusSig(bars,sess,code,curBarT){
   const top=getTop2BySession(sess);
   if(top.length<2)return null;
-  const lbMs=apexLookbackBars()*_ivBarMs();
-  const r1=adaptiveBot._lastSig[`${top[0].strat.id}|${code}`];
-  const r2=adaptiveBot._lastSig[`${top[1].strat.id}|${code}`];
-  if(!r1||!r2)return null;
-  if(curBarT-r1.barT>lbMs)return null;
-  if(curBarT-r2.barT>lbMs)return null;
-  if(r1.dir!==r2.dir)return null;
-  return{sig:r1.dir,strats:top,strat1:top[0],strat2:top[1],
+  const bot1=bots.find(bb=>bb.strat.id===top[0].strat.id);
+  const bot2=bots.find(bb=>bb.strat.id===top[1].strat.id);
+  const tr1=bot1&&bot1.openTrades[code];
+  const tr2=bot2&&bot2.openTrades[code];
+  if(!tr1||!tr2)return null;
+  if(tr1.dir!==tr2.dir)return null;
+  return{sig:tr1.dir,strats:top,strat1:top[0],strat2:top[1],
          lookbackBars:apexLookbackBars()};
 }
 // Fallback signal: single highest-PF strategy.
