@@ -670,6 +670,41 @@ table.mt tr:hover td{background:var(--p2)}
     </div>
     <div class="ph" style="border-top:1px solid var(--b2)">Suspend / Revive</div>
     <div class="rsect" style="font-size:7.5px">WR &lt;25% after 20 &rarr; suspended<br>Revives fresh at each new session<br>No wave spawning &mdash; all 34 run always</div>
+    <div class="ph" style="border-top:1px solid var(--b2)">Apex Sounds</div>
+    <div class="rsect" style="font-size:7.5px;display:flex;flex-direction:column;gap:6px">
+      <div style="display:flex;align-items:center;gap:4px">
+        <label style="display:flex;align-items:center;gap:3px;cursor:pointer">
+          <input type="checkbox" id="snd-mute" style="margin:0;cursor:pointer">
+          <span>Mute</span>
+        </label>
+        <span style="flex:1"></span>
+        <span style="font-size:6.5px;color:var(--tx3)">Vol</span>
+        <input type="range" id="snd-vol" min="0" max="100" value="70" style="width:56px;cursor:pointer">
+        <span id="snd-vol-lbl" style="font-size:6.5px;color:var(--tx3);min-width:18px;text-align:right">70</span>
+      </div>
+      <div>
+        <div style="font-size:6.5px;color:var(--tx3);text-transform:uppercase;letter-spacing:1px;margin-bottom:2px">On Apex fires</div>
+        <div style="display:flex;align-items:center;gap:3px">
+          <label style="flex:1;cursor:pointer;border:1px dashed var(--b2);padding:3px 5px;border-radius:2px;font-size:6.5px;color:var(--tx3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+            <input type="file" id="snd-fire-file" accept="audio/*" style="display:none">
+            <span id="snd-fire-name">click to upload</span>
+          </label>
+          <button id="snd-fire-play" title="Preview" style="background:none;border:1px solid var(--b2);color:var(--tx2);cursor:pointer;font-size:8px;width:18px;height:18px;line-height:1;border-radius:2px;padding:0">&#x25B6;</button>
+          <button id="snd-fire-clear" title="Clear" style="background:none;border:1px solid var(--b2);color:var(--tx3);cursor:pointer;font-size:9px;width:18px;height:18px;line-height:1;border-radius:2px;padding:0">&#x2715;</button>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:6.5px;color:var(--tx3);text-transform:uppercase;letter-spacing:1px;margin-bottom:2px">On Apex wins</div>
+        <div style="display:flex;align-items:center;gap:3px">
+          <label style="flex:1;cursor:pointer;border:1px dashed var(--b2);padding:3px 5px;border-radius:2px;font-size:6.5px;color:var(--tx3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+            <input type="file" id="snd-win-file" accept="audio/*" style="display:none">
+            <span id="snd-win-name">click to upload</span>
+          </label>
+          <button id="snd-win-play" title="Preview" style="background:none;border:1px solid var(--b2);color:var(--tx2);cursor:pointer;font-size:8px;width:18px;height:18px;line-height:1;border-radius:2px;padding:0">&#x25B6;</button>
+          <button id="snd-win-clear" title="Clear" style="background:none;border:1px solid var(--b2);color:var(--tx3);cursor:pointer;font-size:9px;width:18px;height:18px;line-height:1;border-radius:2px;padding:0">&#x2715;</button>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 <div id="log"><span class="lc info">FF Elite Bots v7 &mdash; 8 markets &mdash; 4 index pairs &mdash; 34 session-aware strategies (25 Apex-eligible + 9 combo)</span></div>
@@ -1912,6 +1947,7 @@ function processBots(){
           const result=be?"BE":won?"WIN":"LOSS";
           if(!be){
             won?adaptiveBot.wins++:adaptiveBot.losses++;
+            if(won)playApexWin();
           }
           totalClosed++;
           const rec={code:mkt.code,col:mkt.col,botName:"Apex AI",stratId:"ADAPTIVE",
@@ -2019,6 +2055,7 @@ function processBots(){
               apexMode:mode,levelSource}; 
             // reset bars-since-last-trade for this session on entry
             adaptiveBot.barsSinceLastTrade[sess]=0;
+            playApexFire();
           }
         }
       }
@@ -2158,6 +2195,7 @@ function checkLiveExits(){
         if(!isAI)bot.balance=Math.round((bot.balance+pnl)*100)/100;
         if(!be){
           won?bot.wins++:bot.losses++;
+          if(isAI&&won)playApexWin();
         }
         totalClosed++;
         const rec={code,col:mkt.col,botName:bot.name,stratId:bot.strat?.id||"ADAPTIVE",
@@ -2249,6 +2287,110 @@ function playOpenSound(idx){
     }catch(e){}
   });
 }
+
+// ── Apex Sounds (user-uploaded .mp3 / .wav files) ────────────────
+// fire = plays when Apex opens a position
+// win  = plays when Apex closes a position with a positive PnL (not BE)
+const apexSnd={fire:null,win:null,muted:false,volume:0.7};
+function _apexLoadSounds(){
+  try{
+    apexSnd.muted=localStorage.getItem("ff_apex_snd_muted")==="1";
+    const v=parseInt(localStorage.getItem("ff_apex_snd_volume")||"70",10);
+    apexSnd.volume=Math.max(0,Math.min(1,(isNaN(v)?70:v)/100));
+    ["fire","win"].forEach(k=>{
+      const d=localStorage.getItem("ff_apex_snd_"+k+"_data");
+      const n=localStorage.getItem("ff_apex_snd_"+k+"_name");
+      if(d){
+        const a=new Audio(d);a.preload="auto";
+        apexSnd[k]={name:n||"(custom)",audio:a};
+      }
+    });
+  }catch(e){console.warn("apex snd load:",e.message);}
+}
+function _apexSaveSlot(slot,dataUrl,fileName){
+  try{
+    localStorage.setItem("ff_apex_snd_"+slot+"_data",dataUrl);
+    localStorage.setItem("ff_apex_snd_"+slot+"_name",fileName||"(custom)");
+    const a=new Audio(dataUrl);a.preload="auto";
+    apexSnd[slot]={name:fileName||"(custom)",audio:a};
+    return true;
+  }catch(e){
+    alert("Couldn't save sound \u2014 file may be too large for localStorage. Try a smaller file (< 1.5 MB).");
+    console.warn("apex snd save:",e.message);return false;
+  }
+}
+function _apexClearSlot(slot){
+  try{
+    localStorage.removeItem("ff_apex_snd_"+slot+"_data");
+    localStorage.removeItem("ff_apex_snd_"+slot+"_name");
+  }catch(e){}
+  apexSnd[slot]=null;
+}
+function _apexPlay(slot){
+  if(apexSnd.muted)return;
+  const s=apexSnd[slot];if(!s||!s.audio)return;
+  try{
+    s.audio.volume=apexSnd.volume;
+    s.audio.currentTime=0;
+    const p=s.audio.play();
+    if(p&&p.catch)p.catch(()=>{}); // ignore browser autoplay rejections
+  }catch(e){}
+}
+function playApexFire(){_apexPlay("fire");}
+function playApexWin(){_apexPlay("win");}
+function _apexWireSoundsUI(){
+  const muteEl=document.getElementById("snd-mute");
+  const volEl =document.getElementById("snd-vol");
+  const volLbl=document.getElementById("snd-vol-lbl");
+  if(muteEl){
+    muteEl.checked=apexSnd.muted;
+    muteEl.addEventListener("change",()=>{
+      apexSnd.muted=muteEl.checked;
+      try{localStorage.setItem("ff_apex_snd_muted",muteEl.checked?"1":"0");}catch(e){}
+    });
+  }
+  if(volEl){
+    const pct=Math.round(apexSnd.volume*100);
+    volEl.value=pct;
+    if(volLbl)volLbl.textContent=pct;
+    volEl.addEventListener("input",()=>{
+      const p=parseInt(volEl.value,10)||0;
+      apexSnd.volume=p/100;
+      if(volLbl)volLbl.textContent=p;
+      try{localStorage.setItem("ff_apex_snd_volume",String(p));}catch(e){}
+    });
+  }
+  ["fire","win"].forEach(slot=>{
+    const fEl=document.getElementById("snd-"+slot+"-file");
+    const nEl=document.getElementById("snd-"+slot+"-name");
+    const pEl=document.getElementById("snd-"+slot+"-play");
+    const cEl=document.getElementById("snd-"+slot+"-clear");
+    if(nEl&&apexSnd[slot])nEl.textContent=apexSnd[slot].name;
+    if(fEl){
+      fEl.addEventListener("change",e=>{
+        const file=e.target.files&&e.target.files[0];
+        if(!file){return;}
+        if(file.size>2*1024*1024){
+          if(!confirm("File is "+(file.size/1024/1024).toFixed(1)+" MB \u2014 large files may exceed localStorage. Continue?")){fEl.value="";return;}
+        }
+        const r=new FileReader();
+        r.onload=()=>{
+          if(_apexSaveSlot(slot,r.result,file.name)&&nEl)nEl.textContent=file.name;
+        };
+        r.onerror=()=>{alert("Failed to read file.");};
+        r.readAsDataURL(file);
+        fEl.value="";
+      });
+    }
+    if(pEl)pEl.addEventListener("click",ev=>{ev.preventDefault();_apexPlay(slot);});
+    if(cEl)cEl.addEventListener("click",ev=>{
+      ev.preventDefault();
+      _apexClearSlot(slot);
+      if(nEl)nEl.textContent="click to upload";
+    });
+  });
+}
+_apexLoadSounds();
 
 // ── RAF chart grid ────────────────────────────────────────────
 const cvMap={};
@@ -3194,6 +3336,7 @@ document.querySelectorAll(".ivb").forEach(btn=>{
 window.addEventListener("resize",()=>MKTS.forEach(m=>{dirty[m.id]=true;}));
 
 buildGrid();
+_apexWireSoundsUI();
 updateSessionClock();
 setInterval(updateSessionClock,5000);
 refreshFull();
