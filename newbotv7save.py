@@ -1932,6 +1932,23 @@ function processBots(){
           document.getElementById("tcl").textContent=totalClosed;
           addLog(`AI ${mkt.code} ${result} ${f$(pnl)} [${at.sessLabel||at.sess}] conf:${((at.conf||0)*100).toFixed(0)}%`,be?"info":won?"win":"loss");
         }
+        // v7.1: Apex trailing stop — when 2/3 toward TP reached this bar,
+        // bump SL up/down to entry (breakeven). One-shot via _beArmed flag.
+        const tOpenAfter=adaptiveBot.openTrades[mkt.code];
+        if(tOpenAfter&&!tOpenAfter._beArmed){
+          const tpDist=Math.abs(tOpenAfter.tp-tOpenAfter.entry);
+          if(tpDist>0){
+            const trig=tOpenAfter.dir==="long"
+              ?tOpenAfter.entry+tpDist*(2/3)
+              :tOpenAfter.entry-tpDist*(2/3);
+            const reached=tOpenAfter.dir==="long"?bar.h>=trig:bar.l<=trig;
+            if(reached){
+              tOpenAfter.sl=snap(tOpenAfter.entry,mkt.tick);
+              tOpenAfter._beArmed=true;
+              addLog(`AI ${mkt.code} SL→BE @${tOpenAfter.entry.toFixed(2)} (2/3 to TP)`,"info");
+            }
+          }
+        }
       }else if(atr[i]!=null){
         // ── Apex: enter new position (consensus / fallback) ───────
         const aiOpenCount=Object.keys(adaptiveBot.openTrades).length;
@@ -2164,6 +2181,23 @@ function checkLiveExits(){
         const tag=isAI?"AI ":"";
         addLog(`${tag}${code} ${bot.name} ${result} ${f$(pnl)} [live]`,be?"info":won?"win":"loss");
         const mktObj=MKTS.find(m=>m.code===code);if(mktObj)dirty[mktObj.id]=true;
+      }
+      // v7.1: Apex trailing stop on live tick — same 2/3 rule, only Apex.
+      const isAItrail=bot===adaptiveBot;
+      const tStillOpen=bot.openTrades[code];
+      if(isAItrail&&tStillOpen&&!tStillOpen._beArmed){
+        const tpDist=Math.abs(tStillOpen.tp-tStillOpen.entry);
+        if(tpDist>0){
+          const trig=tStillOpen.dir==="long"
+            ?tStillOpen.entry+tpDist*(2/3)
+            :tStillOpen.entry-tpDist*(2/3);
+          const reached=tStillOpen.dir==="long"?barH>=trig:barL<=trig;
+          if(reached){
+            tStillOpen.sl=snap(tStillOpen.entry,mkt.tick);
+            tStillOpen._beArmed=true;
+            addLog(`AI ${code} SL→BE @${tStillOpen.entry.toFixed(2)} (2/3 to TP)`,"info");
+          }
+        }
       }
     });
   });
