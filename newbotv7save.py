@@ -936,19 +936,13 @@ function getApexConsensusSig(bars,sess,code,curBarT){
   return{sig:tr1.dir,strats:top,strat1:top[0],strat2:top[1],
          lookbackBars:apexLookbackBars()};
 }
-// v7.0.1: FALLBACK now requires an OPEN trade on top-1 OR top-2 for this
-// market. Prefers top-1 (higher PF) — only falls back to top-2 if top-1
-// is idle on this market. Replaces the previous fresh-signal() entry, which
-// could fire when neither underlying bot was committed to a real trade.
-function getApexFallbackSig(bars,sess,code){
-  const top=getTop2BySession(sess);
-  if(top.length<1)return null;
-  for(const cand of top){
-    const bot=bots.find(bb=>bb.strat.id===cand.strat.id);
-    const tr=bot&&bot.openTrades[code];
-    if(tr)return{sig:tr.dir,strats:[cand],strat1:cand,strat2:null};
-  }
-  return null;
+// Fallback signal: single highest-PF strategy.
+function getApexFallbackSig(bars,sess){
+  const best=getApexBest(sess);
+  if(!best)return null;
+  const sig=best.strat.signal(bars);
+  if(!sig)return null;
+  return{sig,strats:[best],strat1:best,strat2:null};
 }
 
 let t1Consensus=null;
@@ -1956,7 +1950,7 @@ function processBots(){
           const mode=adaptiveBot.apexMode[sess]||"CONSENSUS";
           let res=null;
           if(mode==="FALLBACK"){
-            res=getApexFallbackSig(b.slice(0,i+1),sess,mkt.code);
+            res=getApexFallbackSig(b.slice(0,i+1),sess);
             // decrement fallback duration only on a new bar
             if(isNewBar){
               const rem=(adaptiveBot.fallbackBarsRemaining[sess]||0)-1;
