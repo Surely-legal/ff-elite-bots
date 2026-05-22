@@ -861,7 +861,7 @@ const APEX_FALLBACK_BARS_THRESHOLD=20;
 const APEX_FALLBACK_DURATION=5;
 // v7.0: Apex may hold up to N concurrent open positions across markets
 // (still capped at 1 trade per market by the openTrades[mkt.code] keying).
-const APEX_MAX_CONCURRENT=2;
+const APEX_MAX_CONCURRENT=4;
 // v6.8 strict revert: ADX_TREND_MIN / ADX_RANGE_MAX / REGIME_ALLOW removed.
 function _ensureSessSlot(sess,stratId){
   const t=adaptiveBot.sessionTally;
@@ -910,7 +910,6 @@ function getTop2BySession(sess){
   const ranked=[];
   STRATS.forEach(s=>{
     if(!liveIds.has(s.id))return;
-    if(s.apexExclude)return;
     const e=expectancy(sess,s.id);
     if(e.n<APEX_MIN_TRADES)return;
     if(!(e.pf>=APEX_PF_MIN))return; // also rejects NaN
@@ -1860,13 +1859,14 @@ function processBots(){
         const t=bot.openTrades[mkt.code];
         if(t){
           let closed=false,ex=0,won=false;
+          const tpTol=mkt.tick;
           if(t.dir==="long"){
-            if(bar.h>=t.tp&&bar.l<=t.sl){ex=t.sl;closed=true;won=false;}
-            else if(bar.h>=t.tp){ex=t.tp;closed=true;won=true;}
+            if(bar.h>=(t.tp-tpTol)&&bar.l<=t.sl){ex=t.sl;closed=true;won=false;}
+            else if(bar.h>=(t.tp-tpTol)){ex=t.tp;closed=true;won=true;}
             else if(bar.l<=t.sl){ex=t.sl;closed=true;won=false;}
           }else{
-            if(bar.l<=t.tp&&bar.h>=t.sl){ex=t.sl;closed=true;won=false;}
-            else if(bar.l<=t.tp){ex=t.tp;closed=true;won=true;}
+            if(bar.l<=(t.tp+tpTol)&&bar.h>=t.sl){ex=t.sl;closed=true;won=false;}
+            else if(bar.l<=(t.tp+tpTol)){ex=t.tp;closed=true;won=true;}
             else if(bar.h>=t.sl){ex=t.sl;closed=true;won=false;}
           }
           if(closed){
@@ -1920,6 +1920,7 @@ function processBots(){
             const sl=snap(sig==="long"?entry-dist:entry+dist,mkt.tick);
             const tp=snap(sig==="long"?entry+dist*rrMult:entry-dist*rrMult,mkt.tick);
             bot.openTrades[mkt.code]={dir:sig,entry,sl,tp,openT:bar.t,atr:atr[i],sess,sessLabel,rr:rrMult,conf:c};
+            if(bot._barClosedCodes)bot._barClosedCodes.delete(mkt.code);
           }
         }
       });
@@ -1967,23 +1968,6 @@ function processBots(){
           if(!be)recordPerfAll("ADAPTIVE",at.openT,mkt.code,won,pnl);
           document.getElementById("tcl").textContent=totalClosed;
           addLog(`AI ${mkt.code} ${result} ${f$(pnl)} [${at.sessLabel||at.sess}] conf:${((at.conf||0)*100).toFixed(0)}%`,be?"info":won?"win":"loss");
-        }
-        // v7.1: Apex trailing stop — when 2/3 toward TP reached this bar,
-        // bump SL up/down to entry (breakeven). One-shot via _beArmed flag.
-        const tOpenAfter=adaptiveBot.openTrades[mkt.code];
-        if(tOpenAfter&&!tOpenAfter._beArmed){
-          const tpDist=Math.abs(tOpenAfter.tp-tOpenAfter.entry);
-          if(tpDist>0){
-            const trig=tOpenAfter.dir==="long"
-              ?tOpenAfter.entry+tpDist*(2/3)
-              :tOpenAfter.entry-tpDist*(2/3);
-            const reached=tOpenAfter.dir==="long"?bar.h>=trig:bar.l<=trig;
-            if(reached){
-              tOpenAfter.sl=snap(tOpenAfter.entry,mkt.tick);
-              tOpenAfter._beArmed=true;
-              addLog(`AI ${mkt.code} SL→BE @${tOpenAfter.entry.toFixed(2)} (2/3 to TP)`,"info");
-            }
-          }
         }
       }else if(atr[i]!=null){
         // ── Apex: enter new position (consensus / fallback) ───────
@@ -2052,7 +2036,8 @@ function processBots(){
             adaptiveBot.openTrades[mkt.code]={dir:res.sig,entry,sl,tp,openT:bar.t,
               atr:atr[i],sess,sessLabel,conf:Math.min(1.0,mkConf),
               rr:rrFinal,votes:res.strat2?2:1,stratUsed,
-              apexMode:mode,levelSource}; 
+              apexMode:mode,levelSource};
+            adaptiveBot._barClosedCodes.delete(mkt.code);
             // reset bars-since-last-trade for this session on entry
             adaptiveBot.barsSinceLastTrade[sess]=0;
             playApexFire();
@@ -2166,13 +2151,14 @@ function checkLiveExits(){
         }
       }
       let closed=false,ex=0,won=false,closeReason="";
+      const tpTol2=mkt.tick;
       if(t.dir==="long"){
-        if(barH>=t.tp&&barL<=t.sl){ex=t.sl;closed=true;won=false;closeReason="sl";}
-        else if(barH>=t.tp){ex=t.tp;closed=true;won=true;closeReason="tp";}
+        if(barH>=(t.tp-tpTol2)&&barL<=t.sl){ex=t.sl;closed=true;won=false;closeReason="sl";}
+        else if(barH>=(t.tp-tpTol2)){ex=t.tp;closed=true;won=true;closeReason="tp";}
         else if(barL<=t.sl){ex=t.sl;closed=true;won=false;closeReason="sl";}
       }else{
-        if(barL<=t.tp&&barH>=t.sl){ex=t.sl;closed=true;won=false;closeReason="sl";}
-        else if(barL<=t.tp){ex=t.tp;closed=true;won=true;closeReason="tp";}
+        if(barL<=(t.tp+tpTol2)&&barH>=t.sl){ex=t.sl;closed=true;won=false;closeReason="sl";}
+        else if(barL<=(t.tp+tpTol2)){ex=t.tp;closed=true;won=true;closeReason="tp";}
         else if(barH>=t.sl){ex=t.sl;closed=true;won=false;closeReason="sl";}
       }
       // ── HARD SL OVERRIDE ────────────────────────────────────────────────
@@ -2219,23 +2205,6 @@ function checkLiveExits(){
         const tag=isAI?"AI ":"";
         addLog(`${tag}${code} ${bot.name} ${result} ${f$(pnl)} [live]`,be?"info":won?"win":"loss");
         const mktObj=MKTS.find(m=>m.code===code);if(mktObj)dirty[mktObj.id]=true;
-      }
-      // v7.1: Apex trailing stop on live tick — same 2/3 rule, only Apex.
-      const isAItrail=bot===adaptiveBot;
-      const tStillOpen=bot.openTrades[code];
-      if(isAItrail&&tStillOpen&&!tStillOpen._beArmed){
-        const tpDist=Math.abs(tStillOpen.tp-tStillOpen.entry);
-        if(tpDist>0){
-          const trig=tStillOpen.dir==="long"
-            ?tStillOpen.entry+tpDist*(2/3)
-            :tStillOpen.entry-tpDist*(2/3);
-          const reached=tStillOpen.dir==="long"?barH>=trig:barL<=trig;
-          if(reached){
-            tStillOpen.sl=snap(tStillOpen.entry,mkt.tick);
-            tStillOpen._beArmed=true;
-            addLog(`AI ${code} SL→BE @${tStillOpen.entry.toFixed(2)} (2/3 to TP)`,"info");
-          }
-        }
       }
     });
   });
