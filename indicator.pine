@@ -548,32 +548,48 @@ fvg_process(array<fvgData> fvgArr, array<box> fvgBoxes, array<fvgData> ifvgArr, 
                     box.set_right(ifvgBox, bar_index)
 
 // ── Request HTF data for FVG detection ──
-// For each timeframe we need the high/low of the last 3 bars on that TF
+// For each timeframe we need the high/low of the last 3 *confirmed* bars on that TF.
+// We use [1],[2],[3] (all confirmed) to avoid repainting, and gate new-FVG creation
+// with timeframe.change() so it only fires once per HTF bar close — preventing
+// duplicate boxes when the chart TF is lower than the FVG TF.
 
-[h1_1m, l1_1m, h2_1m, l2_1m, h3_1m, l3_1m] = request.security(syminfo.tickerid, "1", [high[2], low[2], high[1], low[1], high, low], lookahead=barmerge.lookahead_off)
-[h1_5m, l1_5m, h2_5m, l2_5m, h3_5m, l3_5m] = request.security(syminfo.tickerid, "5", [high[2], low[2], high[1], low[1], high, low], lookahead=barmerge.lookahead_off)
-[h1_15m, l1_15m, h2_15m, l2_15m, h3_15m, l3_15m] = request.security(syminfo.tickerid, "15", [high[2], low[2], high[1], low[1], high, low], lookahead=barmerge.lookahead_off)
+[h1_1m, l1_1m, h2_1m, l2_1m, h3_1m, l3_1m] = request.security(syminfo.tickerid, "1", [high[3], low[3], high[2], low[2], high[1], low[1]], lookahead=barmerge.lookahead_off)
+[h1_5m, l1_5m, h2_5m, l2_5m, h3_5m, l3_5m] = request.security(syminfo.tickerid, "5", [high[3], low[3], high[2], low[2], high[1], low[1]], lookahead=barmerge.lookahead_off)
+[h1_15m, l1_15m, h2_15m, l2_15m, h3_15m, l3_15m] = request.security(syminfo.tickerid, "15", [high[3], low[3], high[2], low[2], high[1], low[1]], lookahead=barmerge.lookahead_off)
 
 // ── Detect FVGs per timeframe ──
 [fvgTop1m,  fvgBtm1m,  fvgBias1m]  = fvg_detect(h1_1m,  l1_1m,  h2_1m,  l2_1m,  h3_1m,  l3_1m)
 [fvgTop5m,  fvgBtm5m,  fvgBias5m]  = fvg_detect(h1_5m,  l1_5m,  h2_5m,  l2_5m,  h3_5m,  l3_5m)
 [fvgTop15m, fvgBtm15m, fvgBias15m] = fvg_detect(h1_15m, l1_15m, h2_15m, l2_15m, h3_15m, l3_15m)
 
-// Only trigger on new FVG (detect change)
-var float prevFvgTop1m  = na
-var float prevFvgTop5m  = na
-var float prevFvgTop15m = na
+// ── Gate: only create a new FVG box on the first bar of a new HTF period ──
+// timeframe.change() returns true on the first chart bar where that TF's bar changes.
+// This prevents the same HTF FVG from spawning duplicate boxes on every sub-bar.
+tf1mChanged  = timeframe.change("1")
+tf5mChanged  = timeframe.change("5")
+tf15mChanged = timeframe.change("15")
 
-newFVG1m  = fvgBias1m  != 0 and (fvgTop1m  != prevFvgTop1m  or fvgBtm1m  != nz(prevFvgTop1m))
-newFVG5m  = fvgBias5m  != 0 and (fvgTop5m  != prevFvgTop5m  or fvgBtm5m  != nz(prevFvgTop5m))
-newFVG15m = fvgBias15m != 0 and (fvgTop15m != prevFvgTop15m or fvgBtm15m != nz(prevFvgTop15m))
+// Track previous values to detect genuinely new FVGs (not just repeated data)
+var float prevFvgTop1m  = na
+var float prevFvgBtm1m  = na
+var float prevFvgTop5m  = na
+var float prevFvgBtm5m  = na
+var float prevFvgTop15m = na
+var float prevFvgBtm15m = na
+
+newFVG1m  = tf1mChanged  and fvgBias1m  != 0 and (fvgTop1m  != prevFvgTop1m  or fvgBtm1m  != prevFvgBtm1m)
+newFVG5m  = tf5mChanged  and fvgBias5m  != 0 and (fvgTop5m  != prevFvgTop5m  or fvgBtm5m  != prevFvgBtm5m)
+newFVG15m = tf15mChanged and fvgBias15m != 0 and (fvgTop15m != prevFvgTop15m or fvgBtm15m != prevFvgBtm15m)
 
 if newFVG1m
     prevFvgTop1m := fvgTop1m
+    prevFvgBtm1m := fvgBtm1m
 if newFVG5m
     prevFvgTop5m := fvgTop5m
+    prevFvgBtm5m := fvgBtm5m
 if newFVG15m
     prevFvgTop15m := fvgTop15m
+    prevFvgBtm15m := fvgBtm15m
 
 // ── Process FVGs ──
 fvg_process(fvgArr1m, fvgBoxes1m, ifvgArr1m, ifvgBoxes1m, newFVG1m ? fvgTop1m : na, newFVG1m ? fvgBtm1m : na, newFVG1m ? fvgBias1m : 0, fvgMaxBoxes, fvgShow1m, ifvgShow1m, fvgBullColor1m, fvgBearColor1m, ifvgBullColor1m, ifvgBearColor1m, fvgExtend)
