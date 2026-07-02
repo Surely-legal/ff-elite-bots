@@ -1,0 +1,713 @@
+//@version=5
+indicator("50/100 Cross + 20 EMA Direction + Structure", overlay=true,
+  max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+
+// ── EMAs ──
+dirLen   = input.int(20,  "Direction EMA", group="EMA")
+slowLen1 = input.int(50,  "Cross EMA 1",   group="EMA")
+slowLen2 = input.int(100, "Cross EMA 2",   group="EMA")
+
+ema20  = ta.ema(close, dirLen)
+ema50  = ta.ema(close, slowLen1)
+ema100 = ta.ema(close, slowLen2)
+
+plot(ema20,  "EMA 20 (Direction)", color=color.orange,  linewidth=2)
+plot(ema50,  "EMA 50",             color=color.blue,    linewidth=2)
+plot(ema100, "EMA 100",            color=color.fuchsia, linewidth=2)
+
+// ── Trigger: 50/100 cross ──
+crossBull = ta.crossover(ema50, ema100)
+crossBear = ta.crossunder(ema50, ema100)
+
+// ── Direction filter: 20 EMA shows market direction ──
+dirUp   = close > ema20
+dirDown = close < ema20
+
+//=================================================================================
+// LuxAlgo "Liquidity Swings" — full indicator, namespaced with ls* to avoid
+// collisions with the rest of this script. Pure visual layer (swing high/low
+// zones, levels, labels). Does not affect entries below.
+//=================================================================================
+lsLength = input.int(14, 'Pivot Lookback', group='LuxAlgo Liquidity Swings')
+
+lsArea = input.string('Wick Extremity', 'Swing Area', options=['Wick Extremity', 'Full Range'], group='LuxAlgo Liquidity Swings')
+
+lsIntraPrecision = input.bool(false, 'Intrabar Precision', inline='ls_intrabar', group='LuxAlgo Liquidity Swings')
+lsIntrabarTf      = input.timeframe('1', '', inline='ls_intrabar', group='LuxAlgo Liquidity Swings')
+
+lsFilterOptions = input.string('Count', 'Filter Areas By', options=['Count', 'Volume'], inline='ls_filter', group='LuxAlgo Liquidity Swings')
+lsFilterValue   = input.float(0, '', inline='ls_filter', group='LuxAlgo Liquidity Swings')
+
+lsShowTop    = input.bool(true, 'Swing High', inline='ls_top', group='LuxAlgo Liquidity Swings - Style')
+lsTopCss     = input.color(color.red, '', inline='ls_top', group='LuxAlgo Liquidity Swings - Style')
+lsTopAreaCss = input.color(color.new(color.red, 50), 'Area', inline='ls_top', group='LuxAlgo Liquidity Swings - Style')
+
+lsShowBtm    = input.bool(true, 'Swing Low', inline='ls_btm', group='LuxAlgo Liquidity Swings - Style')
+lsBtmCss     = input.color(color.teal, '', inline='ls_btm', group='LuxAlgo Liquidity Swings - Style')
+lsBtmAreaCss = input.color(color.new(color.teal, 50), 'Area', inline='ls_btm', group='LuxAlgo Liquidity Swings - Style')
+
+lsLabelSize = input.string('Tiny', 'Labels Size', options=['Tiny', 'Small', 'Normal'], group='LuxAlgo Liquidity Swings - Style')
+
+lsN = bar_index
+
+ls_get_data() => [high, low, volume]
+
+[lsH, lsL, lsV] = request.security_lower_tf(syminfo.tickerid, lsIntrabarTf, ls_get_data())
+
+ls_get_counts(condition, top, btm) =>
+    var count = 0
+    var vol = 0.
+
+    if condition
+        count := 0
+        vol := 0.
+    else
+        if lsIntraPrecision
+            if lsN > lsLength
+                if array.size(lsV[lsLength]) > 0
+                    for [index, element] in lsV[lsLength]
+                        vol += array.get(lsL[lsLength], index) < top and array.get(lsH[lsLength], index) > btm ? element : 0
+        else
+            vol += low[lsLength] < top and high[lsLength] > btm ? volume[lsLength] : 0
+
+        count += low[lsLength] < top and high[lsLength] > btm ? 1 : 0
+
+    [count, vol]
+
+ls_set_label(count, vol, x, y, css, lbl_style) =>
+    var label lbl = na
+    var label_size = switch lsLabelSize
+        'Tiny' => size.tiny
+        'Small' => size.small
+        'Normal' => size.normal
+
+    target = switch lsFilterOptions
+        'Count'  => count
+        'Volume' => vol
+
+    if ta.crossover(target, lsFilterValue)
+        lbl := label.new(x, y, str.tostring(vol, format.volume)
+          , style = lbl_style
+          , size = label_size
+          , color = #00000000
+          , textcolor = css)
+
+    if target > lsFilterValue
+        label.set_text(lbl, str.tostring(vol, format.volume))
+
+ls_set_level(condition, crossed, value, count, vol, css) =>
+    var line lvl = na
+
+    target = switch lsFilterOptions
+        'Count'  => count
+        'Volume' => vol
+
+    if condition
+        if target[1] < lsFilterValue[1]
+            line.delete(lvl[1])
+        else if not crossed[1]
+            line.set_x2(lvl, lsN - lsLength)
+
+        lvl := line.new(lsN - lsLength, value, lsN, value
+          , color = na)
+
+    if not crossed[1]
+        line.set_x2(lvl, lsN + 3)
+
+    if crossed and not crossed[1]
+        line.set_x2(lvl, lsN)
+        line.set_style(lvl, line.style_dashed)
+
+    if target > lsFilterValue
+        line.set_color(lvl, css)
+
+ls_set_zone(condition, x, top, btm, count, vol, css) =>
+    var box bx = na
+
+    target = switch lsFilterOptions
+        'Count'  => count
+        'Volume' => vol
+
+    if ta.crossover(target, lsFilterValue)
+        bx := box.new(x, top, x + count, btm
+          , border_color = na
+          , bgcolor = css)
+
+    if target > lsFilterValue
+        box.set_right(bx, x + count)
+
+var float lsPhTop = na
+var float lsPhBtm = na
+var bool  lsPhCrossed = na
+var       lsPhX1 = 0
+var box   lsPhBx = box.new(na, na, na, na
+  , bgcolor = color.new(lsTopAreaCss, 80)
+  , border_color = na)
+
+var float lsPlTop = na
+var float lsPlBtm = na
+var bool  lsPlCrossed = na
+var       lsPlX1 = 0
+var box   lsPlBx = box.new(na, na, na, na
+  , bgcolor = color.new(lsBtmAreaCss, 80)
+  , border_color = na)
+
+lsPH = ta.pivothigh(lsLength, lsLength)
+
+[lsPhCount, lsPhVol] = ls_get_counts(lsPH, lsPhTop, lsPhBtm)
+
+if lsPH and lsShowTop
+    lsPhTop := high[lsLength]
+    lsPhBtm := switch lsArea
+        'Wick Extremity' => math.max(close[lsLength], open[lsLength])
+        'Full Range' => low[lsLength]
+
+    lsPhX1 := lsN - lsLength
+    lsPhCrossed := false
+
+    box.set_lefttop(lsPhBx, lsPhX1, lsPhTop)
+    box.set_rightbottom(lsPhBx, lsPhX1, lsPhBtm)
+else
+    lsPhCrossed := close > lsPhTop ? true : lsPhCrossed
+
+    if lsPhCrossed
+        box.set_right(lsPhBx, lsPhX1)
+    else
+        box.set_right(lsPhBx, lsN + 3)
+
+if lsShowTop
+    ls_set_zone(lsPH, lsPhX1, lsPhTop, lsPhBtm, lsPhCount, lsPhVol, lsTopAreaCss)
+    ls_set_level(lsPH, lsPhCrossed, lsPhTop, lsPhCount, lsPhVol, lsTopCss)
+    ls_set_label(lsPhCount, lsPhVol, lsPhX1, lsPhTop, lsTopCss, label.style_label_down)
+
+lsPL = ta.pivotlow(lsLength, lsLength)
+
+[lsPlCount, lsPlVol] = ls_get_counts(lsPL, lsPlTop, lsPlBtm)
+
+if lsPL and lsShowBtm
+    lsPlTop := switch lsArea
+        'Wick Extremity' => math.min(close[lsLength], open[lsLength])
+        'Full Range' => high[lsLength]
+    lsPlBtm := low[lsLength]
+
+    lsPlX1 := lsN - lsLength
+    lsPlCrossed := false
+
+    box.set_lefttop(lsPlBx, lsPlX1, lsPlTop)
+    box.set_rightbottom(lsPlBx, lsPlX1, lsPlBtm)
+else
+    lsPlCrossed := close < lsPlBtm ? true : lsPlCrossed
+
+    if lsPlCrossed
+        box.set_right(lsPlBx, lsPlX1)
+    else
+        box.set_right(lsPlBx, lsN + 3)
+
+if lsShowBtm
+    ls_set_zone(lsPL, lsPlX1, lsPlTop, lsPlBtm, lsPlCount, lsPlVol, lsBtmAreaCss)
+    ls_set_level(lsPL, lsPlCrossed, lsPlBtm, lsPlCount, lsPlVol, lsBtmCss)
+    ls_set_label(lsPlCount, lsPlVol, lsPlX1, lsPlBtm, lsBtmCss, label.style_label_up)
+
+//=================================================================================
+// End LuxAlgo Liquidity Swings block
+//=================================================================================
+
+//=================================================================================
+// LuxAlgo "Smart Money Concepts" — Internal Structure (BOS/CHoCH) + Internal
+// Order Blocks only, namespaced with smc* to avoid collisions. Pure visual /
+// informational layer. Does not affect entries below unless you wire it in.
+//=================================================================================
+type smcPivot
+    float currentLevel
+    float lastLevel
+    bool crossed
+    int barTime  = time
+    int barIndex = bar_index
+
+type smcOrderBlock
+    float barHigh
+    float barLow
+    int barTime
+    int bias
+
+type smcTrend
+    int bias
+
+SMC_BULLISH_LEG = 1
+SMC_BEARISH_LEG = 0
+SMC_BULLISH     = 1
+SMC_BEARISH     = -1
+
+smcShowInternals    = input.bool(true, 'Show Internal Structure', group='SMC Internal Structure')
+smcShowInternalBull = input.string('All', 'Bullish Structure', options=['All','BOS','CHoCH'], inline='smcibull', group='SMC Internal Structure')
+smcInternalBullColor= input.color(color.new(#089981,0), '', inline='smcibull', group='SMC Internal Structure')
+smcShowInternalBear = input.string('All', 'Bearish Structure', options=['All','BOS','CHoCH'], inline='smcibear', group='SMC Internal Structure')
+smcInternalBearColor= input.color(color.new(#F23645,0), '', inline='smcibear', group='SMC Internal Structure')
+smcInternalFilterConfluence = input.bool(false, 'Confluence Filter', group='SMC Internal Structure')
+smcInternalLabelSize = input.string('Tiny', 'Internal Label Size', options=['Tiny','Small','Normal'], group='SMC Internal Structure')
+smcInternalPivotLen  = input.int(5, 'Internal Pivot Lookback', group='SMC Internal Structure')
+
+smcShowInternalOB      = input.bool(true, 'Internal Order Blocks', inline='smciob', group='SMC Internal Order Blocks')
+smcInternalOBCount     = input.int(5, '', minval=1, maxval=20, inline='smciob', group='SMC Internal Order Blocks')
+smcOBMitigation        = input.string('High/Low', 'Order Block Mitigation', options=['Close','High/Low'], group='SMC Internal Order Blocks')
+smcInternalBullOBColor = input.color(color.new(#3179f5,80), 'Internal Bullish OB', group='SMC Internal Order Blocks')
+smcInternalBearOBColor = input.color(color.new(#f77c80,80), 'Internal Bearish OB', group='SMC Internal Order Blocks')
+
+var smcPivot smcInternalHigh  = smcPivot.new(na, na, false)
+var smcPivot smcInternalLow   = smcPivot.new(na, na, false)
+var smcTrend smcInternalTrend = smcTrend.new(0)
+
+var array<smcOrderBlock> smcInternalOrderBlocks      = array.new<smcOrderBlock>()
+var array<box>           smcInternalOrderBlocksBoxes = array.new<box>()
+
+var array<float> smcParsedHighs = array.new<float>()
+var array<float> smcParsedLows  = array.new<float>()
+var array<int>   smcTimes       = array.new<int>()
+
+if barstate.isfirst
+    if smcShowInternalOB
+        for smcI = 1 to smcInternalOBCount
+            smcInternalOrderBlocksBoxes.push(box.new(na, na, na, na, xloc=xloc.bar_time, extend=extend.right))
+
+smcBearishOBMitigationSource = smcOBMitigation == 'Close' ? close : high
+smcBullishOBMitigationSource = smcOBMitigation == 'Close' ? close : low
+
+smcAtrMeasure = ta.atr(200)
+smcHighVolBar = (high - low) >= (2 * smcAtrMeasure)
+smcParsedHigh = smcHighVolBar ? low : high
+smcParsedLow  = smcHighVolBar ? high : low
+
+smcParsedHighs.push(smcParsedHigh)
+smcParsedLows.push(smcParsedLow)
+smcTimes.push(time)
+
+smc_leg(size) =>
+    var leg = 0
+    newLegHigh = high[size] > ta.highest(size)
+    newLegLow  = low[size]  < ta.lowest(size)
+    if newLegHigh
+        leg := SMC_BEARISH_LEG
+    else if newLegLow
+        leg := SMC_BULLISH_LEG
+    leg
+
+smc_startOfNewLeg(leg)     => ta.change(leg) != 0
+smc_startOfBullishLeg(leg) => ta.change(leg) == 1
+
+smc_getInternalStructure(size) =>
+    currentLeg = smc_leg(size)
+    newPivot   = smc_startOfNewLeg(currentLeg)
+    pivotLow   = smc_startOfBullishLeg(currentLeg)
+
+    if newPivot
+        if pivotLow
+            smcInternalLow.lastLevel    := smcInternalLow.currentLevel
+            smcInternalLow.currentLevel := low[size]
+            smcInternalLow.crossed      := false
+            smcInternalLow.barTime      := time[size]
+            smcInternalLow.barIndex     := bar_index[size]
+        else
+            smcInternalHigh.lastLevel    := smcInternalHigh.currentLevel
+            smcInternalHigh.currentLevel := high[size]
+            smcInternalHigh.crossed      := false
+            smcInternalHigh.barTime      := time[size]
+            smcInternalHigh.barIndex     := bar_index[size]
+
+smc_labelSize() =>
+    switch smcInternalLabelSize
+        'Tiny'   => size.tiny
+        'Small'  => size.small
+        'Normal' => size.normal
+
+smc_drawStructure(p_ivot, tag, structureColor, labelStyle) =>
+    var line l_ine   = line.new(na, na, na, na, xloc=xloc.bar_time)
+    var label l_abel = label.new(na, na)
+
+    l_ine  := line.new(chart.point.new(p_ivot.barTime, na, p_ivot.currentLevel), chart.point.new(time, na, p_ivot.currentLevel), xloc.bar_time, color=structureColor, style=line.style_dashed)
+    l_abel := label.new(chart.point.new(na, math.round(0.5*(p_ivot.barIndex + bar_index)), p_ivot.currentLevel), tag, xloc.bar_index, color=color(na), textcolor=structureColor, style=labelStyle, size=smc_labelSize())
+
+smc_storeOrderBlock(p_ivot, bias) =>
+    if smcShowInternalOB
+        array<float> a_rray = na
+        int parsedIndex = na
+        if bias == SMC_BEARISH
+            a_rray      := smcParsedHighs.slice(p_ivot.barIndex, bar_index)
+            parsedIndex := p_ivot.barIndex + a_rray.indexof(a_rray.max())
+        else
+            a_rray      := smcParsedLows.slice(p_ivot.barIndex, bar_index)
+            parsedIndex := p_ivot.barIndex + a_rray.indexof(a_rray.min())
+
+        smcOrderBlock o_b = smcOrderBlock.new(smcParsedHighs.get(parsedIndex), smcParsedLows.get(parsedIndex), smcTimes.get(parsedIndex), bias)
+        if smcInternalOrderBlocks.size() >= 100
+            smcInternalOrderBlocks.pop()
+        smcInternalOrderBlocks.unshift(o_b)
+
+smc_deleteOrderBlocks() =>
+    for [smcIdx, smcEachOB] in smcInternalOrderBlocks
+        bool crossedOB = false
+        if smcBearishOBMitigationSource > smcEachOB.barHigh and smcEachOB.bias == SMC_BEARISH
+            crossedOB := true
+        else if smcBullishOBMitigationSource < smcEachOB.barLow and smcEachOB.bias == SMC_BULLISH
+            crossedOB := true
+        if crossedOB
+            smcInternalOrderBlocks.remove(smcIdx)
+
+smc_drawOrderBlocks() =>
+    obSize = smcInternalOrderBlocks.size()
+    if obSize > 0
+        parsedOBs = smcInternalOrderBlocks.slice(0, math.min(smcInternalOBCount, obSize))
+        for [smcIdx, smcEachOB] in parsedOBs
+            obColor = smcEachOB.bias == SMC_BEARISH ? smcInternalBearOBColor : smcInternalBullOBColor
+            b_ox = smcInternalOrderBlocksBoxes.get(smcIdx)
+            b_ox.set_top_left_point(chart.point.new(smcEachOB.barTime, na, smcEachOB.barHigh))
+            b_ox.set_bottom_right_point(chart.point.new(last_bar_time, na, smcEachOB.barLow))
+            b_ox.set_border_color(na)
+            b_ox.set_bgcolor(obColor)
+
+smc_displayInternalStructure() =>
+    var bullishBar = true
+    var bearishBar = true
+    if smcInternalFilterConfluence
+        bullishBar := high - math.max(close, open) > math.min(close, open - low)
+        bearishBar := high - math.max(close, open) < math.min(close, open - low)
+
+    if ta.crossover(close, smcInternalHigh.currentLevel) and not smcInternalHigh.crossed and bullishBar
+        string tag = smcInternalTrend.bias == SMC_BEARISH ? 'CHoCH' : 'BOS'
+        smcInternalHigh.crossed := true
+        smcInternalTrend.bias   := SMC_BULLISH
+
+        displayCond = smcShowInternals and (smcShowInternalBull == 'All' or (smcShowInternalBull == 'BOS' and tag != 'CHoCH') or (smcShowInternalBull == 'CHoCH' and tag == 'CHoCH'))
+        if displayCond
+            smc_drawStructure(smcInternalHigh, tag, smcInternalBullColor, label.style_label_down)
+
+        if smcShowInternalOB
+            smc_storeOrderBlock(smcInternalHigh, SMC_BULLISH)
+
+    if ta.crossunder(close, smcInternalLow.currentLevel) and not smcInternalLow.crossed and bearishBar
+        string tag = smcInternalTrend.bias == SMC_BULLISH ? 'CHoCH' : 'BOS'
+        smcInternalLow.crossed := true
+        smcInternalTrend.bias  := SMC_BEARISH
+
+        displayCond = smcShowInternals and (smcShowInternalBear == 'All' or (smcShowInternalBear == 'BOS' and tag != 'CHoCH') or (smcShowInternalBear == 'CHoCH' and tag == 'CHoCH'))
+        if displayCond
+            smc_drawStructure(smcInternalLow, tag, smcInternalBearColor, label.style_label_up)
+
+        if smcShowInternalOB
+            smc_storeOrderBlock(smcInternalLow, SMC_BEARISH)
+
+smc_getInternalStructure(smcInternalPivotLen)
+smc_displayInternalStructure()
+
+if smcShowInternalOB
+    smc_deleteOrderBlocks()
+
+if barstate.islastconfirmedhistory or barstate.islast
+    if smcShowInternalOB
+        smc_drawOrderBlocks()
+
+//=================================================================================
+// End SMC Internal Structure block
+//=================================================================================
+
+//=================================================================================
+// FVG & IFVG — Fair Value Gaps and Inverse Fair Value Gaps
+// Supports 1m, 5m, 15m timeframes with individual toggles.
+// FVG = 3-candle imbalance (gap between candle 1 wick and candle 3 wick)
+// IFVG = FVG that gets invalidated (price trades through it), flips polarity
+//=================================================================================
+
+// ── FVG/IFVG Inputs ──
+fvgGroup = "FVG / IFVG"
+
+fvgShow1m   = input.bool(true,  "Show 1m FVG",   group=fvgGroup)
+fvgShow5m   = input.bool(true,  "Show 5m FVG",   group=fvgGroup)
+fvgShow15m  = input.bool(true,  "Show 15m FVG",  group=fvgGroup)
+
+ifvgShow1m  = input.bool(true,  "Show 1m IFVG",  group=fvgGroup)
+ifvgShow5m  = input.bool(true,  "Show 5m IFVG",  group=fvgGroup)
+ifvgShow15m = input.bool(true,  "Show 15m IFVG", group=fvgGroup)
+
+fvgMaxBoxes = input.int(10, "Max FVG Boxes Per TF", minval=1, maxval=50, group=fvgGroup)
+fvgExtend   = input.bool(true, "Extend FVG Boxes Right", group=fvgGroup)
+
+fvgBullColor1m   = input.color(color.new(#089981, 70), "1m Bull FVG",  inline="fvg1m", group=fvgGroup)
+fvgBearColor1m   = input.color(color.new(#F23645, 70), "Bear",         inline="fvg1m", group=fvgGroup)
+fvgBullColor5m   = input.color(color.new(#089981, 60), "5m Bull FVG",  inline="fvg5m", group=fvgGroup)
+fvgBearColor5m   = input.color(color.new(#F23645, 60), "Bear",         inline="fvg5m", group=fvgGroup)
+fvgBullColor15m  = input.color(color.new(#089981, 50), "15m Bull FVG", inline="fvg15m", group=fvgGroup)
+fvgBearColor15m  = input.color(color.new(#F23645, 50), "Bear",         inline="fvg15m", group=fvgGroup)
+
+ifvgBullColor1m  = input.color(color.new(#2962FF, 70), "1m Bull IFVG", inline="ifvg1m", group=fvgGroup)
+ifvgBearColor1m  = input.color(color.new(#FF6D00, 70), "Bear",         inline="ifvg1m", group=fvgGroup)
+ifvgBullColor5m  = input.color(color.new(#2962FF, 60), "5m Bull IFVG", inline="ifvg5m", group=fvgGroup)
+ifvgBearColor5m  = input.color(color.new(#FF6D00, 60), "Bear",         inline="ifvg5m", group=fvgGroup)
+ifvgBullColor15m = input.color(color.new(#2962FF, 50), "15m Bull IFVG", inline="ifvg15m", group=fvgGroup)
+ifvgBearColor15m = input.color(color.new(#FF6D00, 50), "Bear",          inline="ifvg15m", group=fvgGroup)
+
+// ── FVG Data Type ──
+type fvgData
+    float top
+    float btm
+    int   startBar
+    int   bias       // 1 = bullish, -1 = bearish
+    bool  mitigated
+    label lbl
+
+// ── FVG Detection Function ──
+fvg_detect(float h1, float l1, float h2, float l2, float h3, float l3) =>
+    bool bullFVG = l3 > h1   // gap up: candle 3 low > candle 1 high
+    bool bearFVG = h3 < l1   // gap down: candle 3 high < candle 1 low
+    float bTop = bullFVG ? l3 : bearFVG ? l1 : na
+    float bBtm = bullFVG ? h1 : bearFVG ? h3 : na
+    int   bias = bullFVG ? 1 : bearFVG ? -1 : 0
+    [bTop, bBtm, bias]
+
+// ── Storage: one array per TF for FVG and IFVG ──
+var array<fvgData> fvgArr1m  = array.new<fvgData>()
+var array<fvgData> fvgArr5m  = array.new<fvgData>()
+var array<fvgData> fvgArr15m = array.new<fvgData>()
+var array<box>     fvgBoxes1m  = array.new<box>()
+var array<box>     fvgBoxes5m  = array.new<box>()
+var array<box>     fvgBoxes15m = array.new<box>()
+
+var array<fvgData> ifvgArr1m  = array.new<fvgData>()
+var array<fvgData> ifvgArr5m  = array.new<fvgData>()
+var array<fvgData> ifvgArr15m = array.new<fvgData>()
+var array<box>     ifvgBoxes1m  = array.new<box>()
+var array<box>     ifvgBoxes5m  = array.new<box>()
+var array<box>     ifvgBoxes15m = array.new<box>()
+
+// ── Helper: check if a new zone overlaps ANY existing unmitigated zone ──
+fvg_has_overlap(array<fvgData> arr, float newTop, float newBtm, int newBias) =>
+    bool found = false
+    if arr.size() > 0
+        for i = 0 to arr.size() - 1
+            fvgData ex = arr.get(i)
+            if not ex.mitigated and ex.bias == newBias
+                // Any overlap at all = duplicate (strict)
+                if math.min(newTop, ex.top) > math.max(newBtm, ex.btm)
+                    found := true
+                    break
+    found
+
+// ── Helper: manage FVG for a given timeframe ──
+fvg_process(array<fvgData> fvgArr, array<box> fvgBoxes, array<fvgData> ifvgArr, array<box> ifvgBoxes, float gapTop, float gapBtm, int bias, int maxBoxes, bool showFVG, bool showIFVG, color bullFVGCol, color bearFVGCol, color bullIFVGCol, color bearIFVGCol, bool extendRight, string tfLabel) =>
+    // Add new FVG — skip if ANY overlap with existing unmitigated same-direction FVG
+    if bias != 0 and showFVG
+        if not fvg_has_overlap(fvgArr, gapTop, gapBtm, bias)
+            fvgData newFVG = fvgData.new(gapTop, gapBtm, bar_index - 1, bias, false, na)
+            color boxCol = bias == 1 ? bullFVGCol : bearFVGCol
+            box newBox = box.new(bar_index - 2, gapTop, bar_index, gapBtm, border_color=boxCol, bgcolor=boxCol, border_width=1)
+            if extendRight
+                box.set_extend(newBox, extend.right)
+            // Label with TF name
+            string labelText = tfLabel + (bias == 1 ? " Bull" : " Bear")
+            color lblColor = boxCol
+            label newLbl = label.new(bar_index - 1, gapTop, labelText, style=label.style_none, textcolor=lblColor, size=size.normal)
+            newFVG.lbl := newLbl
+            fvgArr.unshift(newFVG)
+            fvgBoxes.unshift(newBox)
+
+            // Trim excess
+            if fvgArr.size() > maxBoxes
+                fvgData old = fvgArr.pop()
+                box oldBox = fvgBoxes.pop()
+                box.delete(oldBox)
+                label.delete(old.lbl)
+
+    // Check mitigation of existing FVGs
+    if fvgArr.size() > 0
+        for i = fvgArr.size() - 1 to 0
+            fvgData fvg = fvgArr.get(i)
+            if not fvg.mitigated
+                bool mitigated = false
+                if fvg.bias == 1
+                    mitigated := close < fvg.btm
+                else
+                    mitigated := close > fvg.top
+
+                if mitigated
+                    fvg.mitigated := true
+                    box fvgBox = fvgBoxes.get(i)
+                    box.set_extend(fvgBox, extend.none)
+                    box.set_right(fvgBox, bar_index)
+
+                    // Create IFVG (polarity flip)
+                    if showIFVG
+                        int ifvgBias = fvg.bias == 1 ? -1 : 1
+                        if not fvg_has_overlap(ifvgArr, fvg.top, fvg.btm, ifvgBias)
+                            fvgData newIFVG = fvgData.new(fvg.top, fvg.btm, bar_index, ifvgBias, false, na)
+                            color ifvgCol = ifvgBias == 1 ? bullIFVGCol : bearIFVGCol
+                            box ifvgBox = box.new(bar_index, fvg.top, bar_index, fvg.btm, border_color=ifvgCol, bgcolor=ifvgCol, border_width=1, border_style=line.style_dashed)
+                            if extendRight
+                                box.set_extend(ifvgBox, extend.right)
+                            string iLabelText = tfLabel + " i" + (ifvgBias == 1 ? "Bull" : "Bear")
+                            label iLbl = label.new(bar_index, fvg.top, iLabelText, style=label.style_none, textcolor=ifvgCol, size=size.normal)
+                            newIFVG.lbl := iLbl
+                            ifvgArr.unshift(newIFVG)
+                            ifvgBoxes.unshift(ifvgBox)
+
+                            if ifvgArr.size() > maxBoxes
+                                fvgData oldI = ifvgArr.pop()
+                                box oldIBox = ifvgBoxes.pop()
+                                box.delete(oldIBox)
+                                label.delete(oldI.lbl)
+
+    // Check mitigation of IFVGs
+    if ifvgArr.size() > 0
+        for i = ifvgArr.size() - 1 to 0
+            fvgData ifvg = ifvgArr.get(i)
+            if not ifvg.mitigated
+                bool ifvgMit = false
+                if ifvg.bias == 1
+                    ifvgMit := close < ifvg.btm
+                else
+                    ifvgMit := close > ifvg.top
+
+                if ifvgMit
+                    ifvg.mitigated := true
+                    box ifvgBox = ifvgBoxes.get(i)
+                    box.set_extend(ifvgBox, extend.none)
+                    box.set_right(ifvgBox, bar_index)
+
+// ── Request HTF data for FVG detection ──
+// Use confirmed bars [1],[2],[3] to avoid repainting.
+// Gate with timeframe.change() so detection fires only once per HTF bar close.
+
+[h1_1m, l1_1m, h2_1m, l2_1m, h3_1m, l3_1m] = request.security(syminfo.tickerid, "1", [high[3], low[3], high[2], low[2], high[1], low[1]], lookahead=barmerge.lookahead_off)
+[h1_5m, l1_5m, h2_5m, l2_5m, h3_5m, l3_5m] = request.security(syminfo.tickerid, "5", [high[3], low[3], high[2], low[2], high[1], low[1]], lookahead=barmerge.lookahead_off)
+[h1_15m, l1_15m, h2_15m, l2_15m, h3_15m, l3_15m] = request.security(syminfo.tickerid, "15", [high[3], low[3], high[2], low[2], high[1], low[1]], lookahead=barmerge.lookahead_off)
+
+// ── Detect FVGs per timeframe ──
+[fvgTop1m,  fvgBtm1m,  fvgBias1m]  = fvg_detect(h1_1m,  l1_1m,  h2_1m,  l2_1m,  h3_1m,  l3_1m)
+[fvgTop5m,  fvgBtm5m,  fvgBias5m]  = fvg_detect(h1_5m,  l1_5m,  h2_5m,  l2_5m,  h3_5m,  l3_5m)
+[fvgTop15m, fvgBtm15m, fvgBias15m] = fvg_detect(h1_15m, l1_15m, h2_15m, l2_15m, h3_15m, l3_15m)
+
+// ── Gate: only fire on first bar of new HTF period ──
+tf1mChanged  = timeframe.change("1")
+tf5mChanged  = timeframe.change("5")
+tf15mChanged = timeframe.change("15")
+
+// Only pass bias through when TF has changed (prevents multi-fire on sub-bars)
+int bias1m  = tf1mChanged  ? fvgBias1m  : 0
+int bias5m  = tf5mChanged  ? fvgBias5m  : 0
+int bias15m = tf15mChanged ? fvgBias15m : 0
+
+// ── Process FVGs (overlap check inside prevents stacking) ──
+fvg_process(fvgArr1m,  fvgBoxes1m,  ifvgArr1m,  ifvgBoxes1m,  fvgTop1m,  fvgBtm1m,  bias1m,  fvgMaxBoxes, fvgShow1m,  ifvgShow1m,  fvgBullColor1m,  fvgBearColor1m,  ifvgBullColor1m,  ifvgBearColor1m,  fvgExtend, "1m")
+fvg_process(fvgArr5m,  fvgBoxes5m,  ifvgArr5m,  ifvgBoxes5m,  fvgTop5m,  fvgBtm5m,  bias5m,  fvgMaxBoxes, fvgShow5m,  ifvgShow5m,  fvgBullColor5m,  fvgBearColor5m,  ifvgBullColor5m,  ifvgBearColor5m,  fvgExtend, "5m")
+fvg_process(fvgArr15m, fvgBoxes15m, ifvgArr15m, ifvgBoxes15m, fvgTop15m, fvgBtm15m, bias15m, fvgMaxBoxes, fvgShow15m, ifvgShow15m, fvgBullColor15m, fvgBearColor15m, ifvgBullColor15m, ifvgBearColor15m, fvgExtend, "15m")
+
+//=================================================================================
+// End FVG / IFVG block
+//=================================================================================
+
+// ── Liquidity sweep confluence (simplified, drives entries) ──
+sweepLen = input.int(14, "Pivot Lookback", group="Confluence Logic")
+ph = ta.pivothigh(sweepLen, sweepLen)
+pl = ta.pivotlow(sweepLen, sweepLen)
+
+var float lastSwingHigh = na
+var float lastSwingLow  = na
+if not na(ph)
+    lastSwingHigh := ph
+if not na(pl)
+    lastSwingLow := pl
+
+sweepLow  = not na(lastSwingLow)  and low  < lastSwingLow  and close > lastSwingLow
+sweepHigh = not na(lastSwingHigh) and high > lastSwingHigh and close < lastSwingHigh
+
+// ── Break of structure (SMC concept) ──
+bullBOS = not na(lastSwingHigh) and ta.crossover(close, lastSwingHigh)
+bearBOS = not na(lastSwingLow)  and ta.crossunder(close, lastSwingLow)
+
+// ── Confluence toggles ──
+useSweep     = input.bool(false, "Require Liquidity Sweep", group="Confluence Logic")
+useBOS       = input.bool(false, "Require Fresh BOS",       group="Confluence Logic")
+sweepRecency = input.int(10, "Sweep Recency (bars)",        group="Confluence Logic")
+
+recentSweepLow  = ta.barssince(sweepLow)  <= sweepRecency
+recentSweepHigh = ta.barssince(sweepHigh) <= sweepRecency
+recentBullBOS   = bullBOS[0] or bullBOS[1] or bullBOS[2]
+recentBearBOS   = bearBOS[0] or bearBOS[1] or bearBOS[2]
+
+// ── Risk ──
+atrLen   = input.int(5,   "ATR Length",      group="Risk")
+stopMult = input.float(2.2, "Stop ATR Mult", group="Risk")
+tpMult   = input.float(3.1, "TP ATR Mult",   group="Risk")
+atrVal   = ta.atr(atrLen)
+
+//=================================================================================
+// TRADE QUALITY FILTERS — toggle each on/off to isolate bad trades
+// Turn them all ON one at a time and re-run backtest to see which improves stats
+//=================================================================================
+
+// ── 1. Session filter: only trade during specific hours (UTC) ──
+// Bad trades often happen in dead/low-liquidity hours
+useSession    = input.bool(false, "Session Filter",        group="Quality Filters")
+sessionStart  = input.int(13, "Session Start Hour (UTC)", group="Quality Filters", minval=0, maxval=23)
+sessionEnd    = input.int(1,  "Session End Hour (UTC)",   group="Quality Filters", minval=0, maxval=23)
+currentHour   = hour(time, "UTC")
+inSession     = not useSession or (currentHour >= sessionStart and currentHour < sessionEnd)
+
+// ── 2. EMA separation: skip crosses where 50/100 are too close together ──
+// Choppy crosses happen when the two EMAs are barely apart = noise
+useEMASep     = input.bool(false, "EMA Separation Filter",   group="Quality Filters")
+emaSepMin     = input.float(0.05, "Min 50/100 Sep (% price)", group="Quality Filters", step=0.01)
+emaSepPct     = math.abs(ema50 - ema100) / ema100 * 100
+emaSepOK      = not useEMASep or emaSepPct >= emaSepMin
+
+// ── 3. ATR volatility filter: skip during abnormally low or high volatility ──
+// Low vol = no follow-through. High vol = erratic, wide SL hit
+useVolFilter  = input.bool(true,  "Volatility Filter",        group="Quality Filters")
+atrMaLen      = input.int(50, "ATR MA Length",               group="Quality Filters")
+atrMinMult    = input.float(1.2, "Min ATR (x avg)",          group="Quality Filters", step=0.1)
+atrMaxMult    = input.float(2.1, "Max ATR (x avg)",          group="Quality Filters", step=0.1)
+atrMa         = ta.sma(atrVal, atrMaLen)
+volOK         = not useVolFilter or (atrVal >= atrMa * atrMinMult and atrVal <= atrMa * atrMaxMult)
+
+// ── 4. SMC internal trend alignment: only long if SMC says bullish, short if bearish ──
+// Filters trades that go against the internal structure trend
+useSMCAlign   = input.bool(false, "SMC Trend Alignment Filter", group="Quality Filters")
+smcLongOK     = not useSMCAlign or smcInternalTrend.bias == SMC_BULLISH
+smcShortOK    = not useSMCAlign or smcInternalTrend.bias == SMC_BEARISH
+
+// ── 5. 20 EMA slope: skip if 20 EMA is flat (directionless market) ──
+// A flat 20 EMA means no clear momentum behind the move
+useEMASlope   = input.bool(true,  "20 EMA Slope Filter",      group="Quality Filters")
+emaSlopeLen   = input.int(9, "Slope Lookback (bars)",         group="Quality Filters")
+emaSlopeMin   = input.float(0.01, "Min Slope (% per bar)",    group="Quality Filters", step=0.005)
+emaSlope      = math.abs(ema20 - ema20[emaSlopeLen]) / ema20[emaSlopeLen] * 100 / emaSlopeLen
+emaSlopeOK    = not useEMASlope or emaSlope >= emaSlopeMin
+
+// ── 6. No counter-trend: skip if price is on the wrong side of all 3 EMAs ──
+// Long only if close > ema20 > ema50, short only if close < ema20 < ema50
+useEMAStack   = input.bool(false, "EMA Stack Filter",         group="Quality Filters")
+emaStackLong  = not useEMAStack or (close > ema20 and ema20 > ema50)
+emaStackShort = not useEMAStack or (close < ema20 and ema20 < ema50)
+
+//=================================================================================
+// COMBINED SIGNAL CONDITIONS
+//=================================================================================
+qualityFilters  = inSession and emaSepOK and volOK and emaSlopeOK
+
+longCond  = qualityFilters and crossBull and dirUp   and smcLongOK  and emaStackLong  and (not useSweep or recentSweepLow)  and (not useBOS or recentBullBOS)
+shortCond = qualityFilters and crossBear and dirDown and smcShortOK and emaStackShort and (not useSweep or recentSweepHigh) and (not useBOS or recentBearBOS)
+
+longStop  = close - atrVal * stopMult
+longTp    = close + atrVal * tpMult
+shortStop = close + atrVal * stopMult
+shortTp   = close - atrVal * tpMult
+
+// ── Plots ──
+plotshape(longCond,  "Long Signal",  shape.triangleup,   location.belowbar, color.lime,   size=size.small)
+plotshape(shortCond, "Short Signal", shape.triangledown, location.abovebar, color.red,    size=size.small)
+bgcolor(dirUp ? color.new(color.green, 92) : color.new(color.red, 92))
+
+plot(longCond  ? longStop  : na, "Long SL",  style=plot.style_circles, color=color.red,  linewidth=2)
+plot(longCond  ? longTp    : na, "Long TP",  style=plot.style_circles, color=color.lime, linewidth=2)
+plot(shortCond ? shortStop : na, "Short SL", style=plot.style_circles, color=color.red,  linewidth=2)
+plot(shortCond ? shortTp   : na, "Short TP", style=plot.style_circles, color=color.lime, linewidth=2)
+
+alertcondition(longCond,  "Long Signal",  "50/100 bull cross + filters passed — Long")
+alertcondition(shortCond, "Short Signal", "50/100 bear cross + filters passed — Short")
