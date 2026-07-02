@@ -478,23 +478,43 @@ var array<fvgData> ifvgArr1m  = array.new<fvgData>()
 var array<fvgData> ifvgArr5m  = array.new<fvgData>()
 var array<fvgData> ifvgArr15m = array.new<fvgData>()
 
+// ── Helper: check if two zones overlap significantly ──
+fvg_overlaps(float newTop, float newBtm, float existTop, float existBtm) =>
+    // Two zones overlap if min(top1,top2) > max(btm1,btm2)
+    float overlapTop = math.min(newTop, existTop)
+    float overlapBtm = math.max(newBtm, existBtm)
+    float overlapSize = math.max(0.0, overlapTop - overlapBtm)
+    float newSize = newTop - newBtm
+    // Consider it a duplicate if overlap covers >= 50% of the new zone
+    newSize > 0 ? overlapSize / newSize >= 0.5 : false
+
 // ── Helper: manage FVG for a given timeframe ──
 fvg_process(array<fvgData> fvgArr, array<box> fvgBoxes, array<fvgData> ifvgArr, array<box> ifvgBoxes, float gapTop, float gapBtm, int bias, int maxBoxes, bool showFVG, bool showIFVG, color bullFVGCol, color bearFVGCol, color bullIFVGCol, color bearIFVGCol, bool extendRight) =>
-    // Add new FVG
+    // Add new FVG — but only if it doesn't overlap an existing unmitigated FVG
     if bias != 0 and showFVG
-        fvgData newFVG = fvgData.new(gapTop, gapBtm, bar_index - 1, bias, false)
-        fvgArr.unshift(newFVG)
-        color boxCol = bias == 1 ? bullFVGCol : bearFVGCol
-        box newBox = box.new(bar_index - 2, gapTop, bar_index, gapBtm, border_color=boxCol, bgcolor=boxCol, border_width=1)
-        if extendRight
-            box.set_extend(newBox, extend.right)
-        fvgBoxes.unshift(newBox)
+        bool isDuplicate = false
+        if fvgArr.size() > 0
+            for i = 0 to fvgArr.size() - 1
+                fvgData existing = fvgArr.get(i)
+                if not existing.mitigated and existing.bias == bias
+                    if fvg_overlaps(gapTop, gapBtm, existing.top, existing.btm)
+                        isDuplicate := true
+                        break
 
-        // Trim excess
-        if fvgArr.size() > maxBoxes
-            fvgArr.pop()
-            box oldBox = fvgBoxes.pop()
-            box.delete(oldBox)
+        if not isDuplicate
+            fvgData newFVG = fvgData.new(gapTop, gapBtm, bar_index - 1, bias, false)
+            fvgArr.unshift(newFVG)
+            color boxCol = bias == 1 ? bullFVGCol : bearFVGCol
+            box newBox = box.new(bar_index - 2, gapTop, bar_index, gapBtm, border_color=boxCol, bgcolor=boxCol, border_width=1)
+            if extendRight
+                box.set_extend(newBox, extend.right)
+            fvgBoxes.unshift(newBox)
+
+            // Trim excess
+            if fvgArr.size() > maxBoxes
+                fvgArr.pop()
+                box oldBox = fvgBoxes.pop()
+                box.delete(oldBox)
 
     // Check mitigation of existing FVGs
     if fvgArr.size() > 0
