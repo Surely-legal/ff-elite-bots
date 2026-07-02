@@ -451,8 +451,9 @@ type fvgData
     int   startBar
     int   bias       // 1 = bullish, -1 = bearish
     bool  mitigated
+    label lbl
 
-// ── FVG Detection Function (current timeframe) ──
+// ── FVG Detection Function ──
 fvg_detect(float h1, float l1, float h2, float l2, float h3, float l3) =>
     bool bullFVG = l3 > h1   // gap up: candle 3 low > candle 1 high
     bool bearFVG = h3 < l1   // gap down: candle 3 high < candle 1 low
@@ -461,60 +462,58 @@ fvg_detect(float h1, float l1, float h2, float l2, float h3, float l3) =>
     int   bias = bullFVG ? 1 : bearFVG ? -1 : 0
     [bTop, bBtm, bias]
 
-// ── Arrays to store FVG/IFVG boxes per timeframe ──
-var array<box> fvgBoxes1m  = array.new<box>()
-var array<box> fvgBoxes5m  = array.new<box>()
-var array<box> fvgBoxes15m = array.new<box>()
-
+// ── Storage: one array per TF for FVG and IFVG ──
 var array<fvgData> fvgArr1m  = array.new<fvgData>()
 var array<fvgData> fvgArr5m  = array.new<fvgData>()
 var array<fvgData> fvgArr15m = array.new<fvgData>()
-
-var array<box> ifvgBoxes1m  = array.new<box>()
-var array<box> ifvgBoxes5m  = array.new<box>()
-var array<box> ifvgBoxes15m = array.new<box>()
+var array<box>     fvgBoxes1m  = array.new<box>()
+var array<box>     fvgBoxes5m  = array.new<box>()
+var array<box>     fvgBoxes15m = array.new<box>()
 
 var array<fvgData> ifvgArr1m  = array.new<fvgData>()
 var array<fvgData> ifvgArr5m  = array.new<fvgData>()
 var array<fvgData> ifvgArr15m = array.new<fvgData>()
+var array<box>     ifvgBoxes1m  = array.new<box>()
+var array<box>     ifvgBoxes5m  = array.new<box>()
+var array<box>     ifvgBoxes15m = array.new<box>()
 
-// ── Helper: check if two zones overlap significantly ──
-fvg_overlaps(float newTop, float newBtm, float existTop, float existBtm) =>
-    // Two zones overlap if min(top1,top2) > max(btm1,btm2)
-    float overlapTop = math.min(newTop, existTop)
-    float overlapBtm = math.max(newBtm, existBtm)
-    float overlapSize = math.max(0.0, overlapTop - overlapBtm)
-    float newSize = newTop - newBtm
-    // Consider it a duplicate if overlap covers >= 50% of the new zone
-    newSize > 0 ? overlapSize / newSize >= 0.5 : false
+// ── Helper: check if a new zone overlaps ANY existing unmitigated zone ──
+fvg_has_overlap(array<fvgData> arr, float newTop, float newBtm, int newBias) =>
+    bool found = false
+    if arr.size() > 0
+        for i = 0 to arr.size() - 1
+            fvgData ex = arr.get(i)
+            if not ex.mitigated and ex.bias == newBias
+                // Any overlap at all = duplicate (strict)
+                if math.min(newTop, ex.top) > math.max(newBtm, ex.btm)
+                    found := true
+                    break
+    found
 
 // ── Helper: manage FVG for a given timeframe ──
-fvg_process(array<fvgData> fvgArr, array<box> fvgBoxes, array<fvgData> ifvgArr, array<box> ifvgBoxes, float gapTop, float gapBtm, int bias, int maxBoxes, bool showFVG, bool showIFVG, color bullFVGCol, color bearFVGCol, color bullIFVGCol, color bearIFVGCol, bool extendRight) =>
-    // Add new FVG — but only if it doesn't overlap an existing unmitigated FVG
+fvg_process(array<fvgData> fvgArr, array<box> fvgBoxes, array<fvgData> ifvgArr, array<box> ifvgBoxes, float gapTop, float gapBtm, int bias, int maxBoxes, bool showFVG, bool showIFVG, color bullFVGCol, color bearFVGCol, color bullIFVGCol, color bearIFVGCol, bool extendRight, string tfLabel) =>
+    // Add new FVG — skip if ANY overlap with existing unmitigated same-direction FVG
     if bias != 0 and showFVG
-        bool isDuplicate = false
-        if fvgArr.size() > 0
-            for i = 0 to fvgArr.size() - 1
-                fvgData existing = fvgArr.get(i)
-                if not existing.mitigated and existing.bias == bias
-                    if fvg_overlaps(gapTop, gapBtm, existing.top, existing.btm)
-                        isDuplicate := true
-                        break
-
-        if not isDuplicate
-            fvgData newFVG = fvgData.new(gapTop, gapBtm, bar_index - 1, bias, false)
-            fvgArr.unshift(newFVG)
+        if not fvg_has_overlap(fvgArr, gapTop, gapBtm, bias)
+            fvgData newFVG = fvgData.new(gapTop, gapBtm, bar_index - 1, bias, false, na)
             color boxCol = bias == 1 ? bullFVGCol : bearFVGCol
             box newBox = box.new(bar_index - 2, gapTop, bar_index, gapBtm, border_color=boxCol, bgcolor=boxCol, border_width=1)
             if extendRight
                 box.set_extend(newBox, extend.right)
+            // Label with TF name
+            string labelText = tfLabel + (bias == 1 ? " Bull" : " Bear")
+            color lblColor = boxCol
+            label newLbl = label.new(bar_index - 1, gapTop, labelText, style=label.style_none, textcolor=lblColor, size=size.normal)
+            newFVG.lbl := newLbl
+            fvgArr.unshift(newFVG)
             fvgBoxes.unshift(newBox)
 
             // Trim excess
             if fvgArr.size() > maxBoxes
-                fvgArr.pop()
+                fvgData old = fvgArr.pop()
                 box oldBox = fvgBoxes.pop()
                 box.delete(oldBox)
+                label.delete(old.lbl)
 
     // Check mitigation of existing FVGs
     if fvgArr.size() > 0
@@ -529,7 +528,6 @@ fvg_process(array<fvgData> fvgArr, array<box> fvgBoxes, array<fvgData> ifvgArr, 
 
                 if mitigated
                     fvg.mitigated := true
-                    // Stop extending the FVG box
                     box fvgBox = fvgBoxes.get(i)
                     box.set_extend(fvgBox, extend.none)
                     box.set_right(fvgBox, bar_index)
@@ -537,20 +535,25 @@ fvg_process(array<fvgData> fvgArr, array<box> fvgBoxes, array<fvgData> ifvgArr, 
                     // Create IFVG (polarity flip)
                     if showIFVG
                         int ifvgBias = fvg.bias == 1 ? -1 : 1
-                        fvgData newIFVG = fvgData.new(fvg.top, fvg.btm, bar_index, ifvgBias, false)
-                        ifvgArr.unshift(newIFVG)
-                        color ifvgCol = ifvgBias == 1 ? bullIFVGCol : bearIFVGCol
-                        box ifvgBox = box.new(bar_index, fvg.top, bar_index, fvg.btm, border_color=ifvgCol, bgcolor=ifvgCol, border_width=1, border_style=line.style_dashed)
-                        if extendRight
-                            box.set_extend(ifvgBox, extend.right)
-                        ifvgBoxes.unshift(ifvgBox)
+                        if not fvg_has_overlap(ifvgArr, fvg.top, fvg.btm, ifvgBias)
+                            fvgData newIFVG = fvgData.new(fvg.top, fvg.btm, bar_index, ifvgBias, false, na)
+                            color ifvgCol = ifvgBias == 1 ? bullIFVGCol : bearIFVGCol
+                            box ifvgBox = box.new(bar_index, fvg.top, bar_index, fvg.btm, border_color=ifvgCol, bgcolor=ifvgCol, border_width=1, border_style=line.style_dashed)
+                            if extendRight
+                                box.set_extend(ifvgBox, extend.right)
+                            string iLabelText = tfLabel + " i" + (ifvgBias == 1 ? "Bull" : "Bear")
+                            label iLbl = label.new(bar_index, fvg.top, iLabelText, style=label.style_none, textcolor=ifvgCol, size=size.normal)
+                            newIFVG.lbl := iLbl
+                            ifvgArr.unshift(newIFVG)
+                            ifvgBoxes.unshift(ifvgBox)
 
-                        if ifvgArr.size() > maxBoxes
-                            ifvgArr.pop()
-                            box oldIFVG = ifvgBoxes.pop()
-                            box.delete(oldIFVG)
+                            if ifvgArr.size() > maxBoxes
+                                fvgData oldI = ifvgArr.pop()
+                                box oldIBox = ifvgBoxes.pop()
+                                box.delete(oldIBox)
+                                label.delete(oldI.lbl)
 
-    // Check mitigation of IFVGs (remove when price trades through)
+    // Check mitigation of IFVGs
     if ifvgArr.size() > 0
         for i = ifvgArr.size() - 1 to 0
             fvgData ifvg = ifvgArr.get(i)
@@ -568,10 +571,8 @@ fvg_process(array<fvgData> fvgArr, array<box> fvgBoxes, array<fvgData> ifvgArr, 
                     box.set_right(ifvgBox, bar_index)
 
 // ── Request HTF data for FVG detection ──
-// For each timeframe we need the high/low of the last 3 *confirmed* bars on that TF.
-// We use [1],[2],[3] (all confirmed) to avoid repainting, and gate new-FVG creation
-// with timeframe.change() so it only fires once per HTF bar close — preventing
-// duplicate boxes when the chart TF is lower than the FVG TF.
+// Use confirmed bars [1],[2],[3] to avoid repainting.
+// Gate with timeframe.change() so detection fires only once per HTF bar close.
 
 [h1_1m, l1_1m, h2_1m, l2_1m, h3_1m, l3_1m] = request.security(syminfo.tickerid, "1", [high[3], low[3], high[2], low[2], high[1], low[1]], lookahead=barmerge.lookahead_off)
 [h1_5m, l1_5m, h2_5m, l2_5m, h3_5m, l3_5m] = request.security(syminfo.tickerid, "5", [high[3], low[3], high[2], low[2], high[1], low[1]], lookahead=barmerge.lookahead_off)
@@ -582,39 +583,20 @@ fvg_process(array<fvgData> fvgArr, array<box> fvgBoxes, array<fvgData> ifvgArr, 
 [fvgTop5m,  fvgBtm5m,  fvgBias5m]  = fvg_detect(h1_5m,  l1_5m,  h2_5m,  l2_5m,  h3_5m,  l3_5m)
 [fvgTop15m, fvgBtm15m, fvgBias15m] = fvg_detect(h1_15m, l1_15m, h2_15m, l2_15m, h3_15m, l3_15m)
 
-// ── Gate: only create a new FVG box on the first bar of a new HTF period ──
-// timeframe.change() returns true on the first chart bar where that TF's bar changes.
-// This prevents the same HTF FVG from spawning duplicate boxes on every sub-bar.
+// ── Gate: only fire on first bar of new HTF period ──
 tf1mChanged  = timeframe.change("1")
 tf5mChanged  = timeframe.change("5")
 tf15mChanged = timeframe.change("15")
 
-// Track previous values to detect genuinely new FVGs (not just repeated data)
-var float prevFvgTop1m  = na
-var float prevFvgBtm1m  = na
-var float prevFvgTop5m  = na
-var float prevFvgBtm5m  = na
-var float prevFvgTop15m = na
-var float prevFvgBtm15m = na
+// Only pass bias through when TF has changed (prevents multi-fire on sub-bars)
+int bias1m  = tf1mChanged  ? fvgBias1m  : 0
+int bias5m  = tf5mChanged  ? fvgBias5m  : 0
+int bias15m = tf15mChanged ? fvgBias15m : 0
 
-newFVG1m  = tf1mChanged  and fvgBias1m  != 0 and (fvgTop1m  != prevFvgTop1m  or fvgBtm1m  != prevFvgBtm1m)
-newFVG5m  = tf5mChanged  and fvgBias5m  != 0 and (fvgTop5m  != prevFvgTop5m  or fvgBtm5m  != prevFvgBtm5m)
-newFVG15m = tf15mChanged and fvgBias15m != 0 and (fvgTop15m != prevFvgTop15m or fvgBtm15m != prevFvgBtm15m)
-
-if newFVG1m
-    prevFvgTop1m := fvgTop1m
-    prevFvgBtm1m := fvgBtm1m
-if newFVG5m
-    prevFvgTop5m := fvgTop5m
-    prevFvgBtm5m := fvgBtm5m
-if newFVG15m
-    prevFvgTop15m := fvgTop15m
-    prevFvgBtm15m := fvgBtm15m
-
-// ── Process FVGs ──
-fvg_process(fvgArr1m, fvgBoxes1m, ifvgArr1m, ifvgBoxes1m, newFVG1m ? fvgTop1m : na, newFVG1m ? fvgBtm1m : na, newFVG1m ? fvgBias1m : 0, fvgMaxBoxes, fvgShow1m, ifvgShow1m, fvgBullColor1m, fvgBearColor1m, ifvgBullColor1m, ifvgBearColor1m, fvgExtend)
-fvg_process(fvgArr5m, fvgBoxes5m, ifvgArr5m, ifvgBoxes5m, newFVG5m ? fvgTop5m : na, newFVG5m ? fvgBtm5m : na, newFVG5m ? fvgBias5m : 0, fvgMaxBoxes, fvgShow5m, ifvgShow5m, fvgBullColor5m, fvgBearColor5m, ifvgBullColor5m, ifvgBearColor5m, fvgExtend)
-fvg_process(fvgArr15m, fvgBoxes15m, ifvgArr15m, ifvgBoxes15m, newFVG15m ? fvgTop15m : na, newFVG15m ? fvgBtm15m : na, newFVG15m ? fvgBias15m : 0, fvgMaxBoxes, fvgShow15m, ifvgShow15m, fvgBullColor15m, fvgBearColor15m, ifvgBullColor15m, ifvgBearColor15m, fvgExtend)
+// ── Process FVGs (overlap check inside prevents stacking) ──
+fvg_process(fvgArr1m,  fvgBoxes1m,  ifvgArr1m,  ifvgBoxes1m,  fvgTop1m,  fvgBtm1m,  bias1m,  fvgMaxBoxes, fvgShow1m,  ifvgShow1m,  fvgBullColor1m,  fvgBearColor1m,  ifvgBullColor1m,  ifvgBearColor1m,  fvgExtend, "1m")
+fvg_process(fvgArr5m,  fvgBoxes5m,  ifvgArr5m,  ifvgBoxes5m,  fvgTop5m,  fvgBtm5m,  bias5m,  fvgMaxBoxes, fvgShow5m,  ifvgShow5m,  fvgBullColor5m,  fvgBearColor5m,  ifvgBullColor5m,  ifvgBearColor5m,  fvgExtend, "5m")
+fvg_process(fvgArr15m, fvgBoxes15m, ifvgArr15m, ifvgBoxes15m, fvgTop15m, fvgBtm15m, bias15m, fvgMaxBoxes, fvgShow15m, ifvgShow15m, fvgBullColor15m, fvgBearColor15m, ifvgBullColor15m, ifvgBearColor15m, fvgExtend, "15m")
 
 //=================================================================================
 // End FVG / IFVG block
