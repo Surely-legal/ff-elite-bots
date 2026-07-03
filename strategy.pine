@@ -1,0 +1,584 @@
+//@version=5
+strategy("50/100 Cross + 20 EMA Direction + Liquidity Swings + Structure Confluence", overlay=true,
+  max_lines_count=500, max_labels_count=500, max_boxes_count=500,
+  default_qty_type=strategy.fixed, default_qty_value=1,
+  calc_on_every_tick=false)
+
+// ── Date window (set to your backtest range) ──
+startDate = input.time(timestamp("2026-05-31 00:00 +0000"), "Backtest Start", group="Date Filter")
+endDate   = input.time(timestamp("2026-07-01 00:00 +0000"), "Backtest End",   group="Date Filter")
+inWindow  = time >= startDate and time <= endDate
+
+// ── EMAs ──
+dirLen   = input.int(20,  "Direction EMA", group="EMA")
+slowLen1 = input.int(50,  "Cross EMA 1",   group="EMA")
+slowLen2 = input.int(100, "Cross EMA 2",   group="EMA")
+
+ema20  = ta.ema(close, dirLen)
+ema50  = ta.ema(close, slowLen1)
+ema100 = ta.ema(close, slowLen2)
+
+plot(ema20,  "EMA 20 (Direction)", color=color.orange,  linewidth=2)
+plot(ema50,  "EMA 50",             color=color.blue,    linewidth=2)
+plot(ema100, "EMA 100",            color=color.fuchsia, linewidth=2)
+
+// ── Trigger: 50/100 cross ──
+crossBull = ta.crossover(ema50, ema100)
+crossBear = ta.crossunder(ema50, ema100)
+
+// ── Direction filter: 20 EMA shows market direction ──
+dirUp   = close > ema20
+dirDown = close < ema20
+
+//=================================================================================
+// LuxAlgo "Liquidity Swings" — full indicator, namespaced with ls* to avoid
+// collisions with the rest of this script. Pure visual layer (swing high/low
+// zones, levels, labels). Does not affect entries below.
+//=================================================================================
+lsLength = input.int(14, 'Pivot Lookback', group='LuxAlgo Liquidity Swings')
+
+lsArea = input.string('Wick Extremity', 'Swing Area', options=['Wick Extremity', 'Full Range'], group='LuxAlgo Liquidity Swings')
+
+lsIntraPrecision = input.bool(false, 'Intrabar Precision', inline='ls_intrabar', group='LuxAlgo Liquidity Swings')
+lsIntrabarTf      = input.timeframe('1', '', inline='ls_intrabar', group='LuxAlgo Liquidity Swings')
+
+lsFilterOptions = input.string('Count', 'Filter Areas By', options=['Count', 'Volume'], inline='ls_filter', group='LuxAlgo Liquidity Swings')
+lsFilterValue   = input.float(0, '', inline='ls_filter', group='LuxAlgo Liquidity Swings')
+
+lsShowTop    = input.bool(true, 'Swing High', inline='ls_top', group='LuxAlgo Liquidity Swings - Style')
+lsTopCss     = input.color(color.red, '', inline='ls_top', group='LuxAlgo Liquidity Swings - Style')
+lsTopAreaCss = input.color(color.new(color.red, 50), 'Area', inline='ls_top', group='LuxAlgo Liquidity Swings - Style')
+
+lsShowBtm    = input.bool(true, 'Swing Low', inline='ls_btm', group='LuxAlgo Liquidity Swings - Style')
+lsBtmCss     = input.color(color.teal, '', inline='ls_btm', group='LuxAlgo Liquidity Swings - Style')
+lsBtmAreaCss = input.color(color.new(color.teal, 50), 'Area', inline='ls_btm', group='LuxAlgo Liquidity Swings - Style')
+
+lsLabelSize = input.string('Tiny', 'Labels Size', options=['Tiny', 'Small', 'Normal'], group='LuxAlgo Liquidity Swings - Style')
+
+lsN = bar_index
+
+ls_get_data() => [high, low, volume]
+
+[lsH, lsL, lsV] = request.security_lower_tf(syminfo.tickerid, lsIntrabarTf, ls_get_data())
+
+ls_get_counts(condition, top, btm) =>
+    var count = 0
+    var vol = 0.
+
+    if condition
+        count := 0
+        vol := 0.
+    else
+        if lsIntraPrecision
+            if lsN > lsLength
+                if array.size(lsV[lsLength]) > 0
+                    for [index, element] in lsV[lsLength]
+                        vol += array.get(lsL[lsLength], index) < top and array.get(lsH[lsLength], index) > btm ? element : 0
+        else
+            vol += low[lsLength] < top and high[lsLength] > btm ? volume[lsLength] : 0
+
+        count += low[lsLength] < top and high[lsLength] > btm ? 1 : 0
+
+    [count, vol]
+
+ls_set_label(count, vol, x, y, css, lbl_style) =>
+    var label lbl = na
+    var label_size = switch lsLabelSize
+        'Tiny' => size.tiny
+        'Small' => size.small
+        'Normal' => size.normal
+
+    target = switch lsFilterOptions
+        'Count'  => count
+        'Volume' => vol
+
+    if ta.crossover(target, lsFilterValue)
+        lbl := label.new(x, y, str.tostring(vol, format.volume)
+          , style = lbl_style
+          , size = label_size
+          , color = #00000000
+          , textcolor = css)
+
+    if target > lsFilterValue
+        label.set_text(lbl, str.tostring(vol, format.volume))
+
+ls_set_level(condition, crossed, value, count, vol, css) =>
+    var line lvl = na
+
+    target = switch lsFilterOptions
+        'Count'  => count
+        'Volume' => vol
+
+    if condition
+        if target[1] < lsFilterValue[1]
+            line.delete(lvl[1])
+        else if not crossed[1]
+            line.set_x2(lvl, lsN - lsLength)
+
+        lvl := line.new(lsN - lsLength, value, lsN, value
+          , color = na)
+
+    if not crossed[1]
+        line.set_x2(lvl, lsN + 3)
+
+    if crossed and not crossed[1]
+        line.set_x2(lvl, lsN)
+        line.set_style(lvl, line.style_dashed)
+
+    if target > lsFilterValue
+        line.set_color(lvl, css)
+
+ls_set_zone(condition, x, top, btm, count, vol, css) =>
+    var box bx = na
+
+    target = switch lsFilterOptions
+        'Count'  => count
+        'Volume' => vol
+
+    if ta.crossover(target, lsFilterValue)
+        bx := box.new(x, top, x + count, btm
+          , border_color = na
+          , bgcolor = css)
+
+    if target > lsFilterValue
+        box.set_right(bx, x + count)
+
+var float lsPhTop = na
+var float lsPhBtm = na
+var bool  lsPhCrossed = na
+var       lsPhX1 = 0
+var box   lsPhBx = box.new(na, na, na, na
+  , bgcolor = color.new(lsTopAreaCss, 80)
+  , border_color = na)
+
+var float lsPlTop = na
+var float lsPlBtm = na
+var bool  lsPlCrossed = na
+var       lsPlX1 = 0
+var box   lsPlBx = box.new(na, na, na, na
+  , bgcolor = color.new(lsBtmAreaCss, 80)
+  , border_color = na)
+
+lsPH = ta.pivothigh(lsLength, lsLength)
+
+[lsPhCount, lsPhVol] = ls_get_counts(lsPH, lsPhTop, lsPhBtm)
+
+if lsPH and lsShowTop
+    lsPhTop := high[lsLength]
+    lsPhBtm := switch lsArea
+        'Wick Extremity' => math.max(close[lsLength], open[lsLength])
+        'Full Range' => low[lsLength]
+
+    lsPhX1 := lsN - lsLength
+    lsPhCrossed := false
+
+    box.set_lefttop(lsPhBx, lsPhX1, lsPhTop)
+    box.set_rightbottom(lsPhBx, lsPhX1, lsPhBtm)
+else
+    lsPhCrossed := close > lsPhTop ? true : lsPhCrossed
+
+    if lsPhCrossed
+        box.set_right(lsPhBx, lsPhX1)
+    else
+        box.set_right(lsPhBx, lsN + 3)
+
+if lsShowTop
+    ls_set_zone(lsPH, lsPhX1, lsPhTop, lsPhBtm, lsPhCount, lsPhVol, lsTopAreaCss)
+    ls_set_level(lsPH, lsPhCrossed, lsPhTop, lsPhCount, lsPhVol, lsTopCss)
+    ls_set_label(lsPhCount, lsPhVol, lsPhX1, lsPhTop, lsTopCss, label.style_label_down)
+
+lsPL = ta.pivotlow(lsLength, lsLength)
+
+[lsPlCount, lsPlVol] = ls_get_counts(lsPL, lsPlTop, lsPlBtm)
+
+if lsPL and lsShowBtm
+    lsPlTop := switch lsArea
+        'Wick Extremity' => math.min(close[lsLength], open[lsLength])
+        'Full Range' => high[lsLength]
+    lsPlBtm := low[lsLength]
+
+    lsPlX1 := lsN - lsLength
+    lsPlCrossed := false
+
+    box.set_lefttop(lsPlBx, lsPlX1, lsPlTop)
+    box.set_rightbottom(lsPlBx, lsPlX1, lsPlBtm)
+else
+    lsPlCrossed := close < lsPlBtm ? true : lsPlCrossed
+
+    if lsPlCrossed
+        box.set_right(lsPlBx, lsPlX1)
+    else
+        box.set_right(lsPlBx, lsN + 3)
+
+if lsShowBtm
+    ls_set_zone(lsPL, lsPlX1, lsPlTop, lsPlBtm, lsPlCount, lsPlVol, lsBtmAreaCss)
+    ls_set_level(lsPL, lsPlCrossed, lsPlBtm, lsPlCount, lsPlVol, lsBtmCss)
+    ls_set_label(lsPlCount, lsPlVol, lsPlX1, lsPlBtm, lsBtmCss, label.style_label_up)
+
+//=================================================================================
+// End LuxAlgo Liquidity Swings block
+//=================================================================================
+
+//=================================================================================
+// LuxAlgo "Smart Money Concepts" — Internal Structure (BOS/CHoCH) + Internal
+// Order Blocks only, namespaced with smc* to avoid collisions. Pure visual /
+// informational layer. Does not affect entries below unless you wire it in.
+//=================================================================================
+type smcPivot
+    float currentLevel
+    float lastLevel
+    bool crossed
+    int barTime  = time
+    int barIndex = bar_index
+
+type smcOrderBlock
+    float barHigh
+    float barLow
+    int barTime
+    int bias
+
+type smcTrend
+    int bias
+
+SMC_BULLISH_LEG = 1
+SMC_BEARISH_LEG = 0
+SMC_BULLISH     = 1
+SMC_BEARISH     = -1
+
+smcShowInternals    = input.bool(true, 'Show Internal Structure', group='SMC Internal Structure')
+smcShowInternalBull = input.string('All', 'Bullish Structure', options=['All','BOS','CHoCH'], inline='smcibull', group='SMC Internal Structure')
+smcInternalBullColor= input.color(color.new(#089981,0), '', inline='smcibull', group='SMC Internal Structure')
+smcShowInternalBear = input.string('All', 'Bearish Structure', options=['All','BOS','CHoCH'], inline='smcibear', group='SMC Internal Structure')
+smcInternalBearColor= input.color(color.new(#F23645,0), '', inline='smcibear', group='SMC Internal Structure')
+smcInternalFilterConfluence = input.bool(false, 'Confluence Filter', group='SMC Internal Structure')
+smcInternalLabelSize = input.string('Tiny', 'Internal Label Size', options=['Tiny','Small','Normal'], group='SMC Internal Structure')
+smcInternalPivotLen  = input.int(5, 'Internal Pivot Lookback', group='SMC Internal Structure')
+
+smcShowInternalOB      = input.bool(true, 'Internal Order Blocks', inline='smciob', group='SMC Internal Order Blocks')
+smcInternalOBCount     = input.int(5, '', minval=1, maxval=20, inline='smciob', group='SMC Internal Order Blocks')
+smcOBMitigation        = input.string('High/Low', 'Order Block Mitigation', options=['Close','High/Low'], group='SMC Internal Order Blocks')
+smcInternalBullOBColor = input.color(color.new(#3179f5,80), 'Internal Bullish OB', group='SMC Internal Order Blocks')
+smcInternalBearOBColor = input.color(color.new(#f77c80,80), 'Internal Bearish OB', group='SMC Internal Order Blocks')
+
+var smcPivot smcInternalHigh  = smcPivot.new(na, na, false)
+var smcPivot smcInternalLow   = smcPivot.new(na, na, false)
+var smcTrend smcInternalTrend = smcTrend.new(0)
+
+var array<smcOrderBlock> smcInternalOrderBlocks      = array.new<smcOrderBlock>()
+var array<box>           smcInternalOrderBlocksBoxes = array.new<box>()
+
+var array<float> smcParsedHighs = array.new<float>()
+var array<float> smcParsedLows  = array.new<float>()
+var array<int>   smcTimes       = array.new<int>()
+
+if barstate.isfirst
+    if smcShowInternalOB
+        for smcI = 1 to smcInternalOBCount
+            smcInternalOrderBlocksBoxes.push(box.new(na, na, na, na, xloc=xloc.bar_time, extend=extend.right))
+
+smcBearishOBMitigationSource = smcOBMitigation == 'Close' ? close : high
+smcBullishOBMitigationSource = smcOBMitigation == 'Close' ? close : low
+
+smcAtrMeasure = ta.atr(200)
+smcHighVolBar = (high - low) >= (2 * smcAtrMeasure)
+smcParsedHigh = smcHighVolBar ? low : high
+smcParsedLow  = smcHighVolBar ? high : low
+
+smcParsedHighs.push(smcParsedHigh)
+smcParsedLows.push(smcParsedLow)
+smcTimes.push(time)
+
+smc_leg(size) =>
+    var leg = 0
+    newLegHigh = high[size] > ta.highest(size)
+    newLegLow  = low[size]  < ta.lowest(size)
+    if newLegHigh
+        leg := SMC_BEARISH_LEG
+    else if newLegLow
+        leg := SMC_BULLISH_LEG
+    leg
+
+smc_startOfNewLeg(leg)     => ta.change(leg) != 0
+smc_startOfBullishLeg(leg) => ta.change(leg) == 1
+
+smc_getInternalStructure(size) =>
+    currentLeg = smc_leg(size)
+    newPivot   = smc_startOfNewLeg(currentLeg)
+    pivotLow   = smc_startOfBullishLeg(currentLeg)
+
+    if newPivot
+        if pivotLow
+            smcInternalLow.lastLevel    := smcInternalLow.currentLevel
+            smcInternalLow.currentLevel := low[size]
+            smcInternalLow.crossed      := false
+            smcInternalLow.barTime      := time[size]
+            smcInternalLow.barIndex     := bar_index[size]
+        else
+            smcInternalHigh.lastLevel    := smcInternalHigh.currentLevel
+            smcInternalHigh.currentLevel := high[size]
+            smcInternalHigh.crossed      := false
+            smcInternalHigh.barTime      := time[size]
+            smcInternalHigh.barIndex     := bar_index[size]
+
+smc_labelSize() =>
+    switch smcInternalLabelSize
+        'Tiny'   => size.tiny
+        'Small'  => size.small
+        'Normal' => size.normal
+
+smc_drawStructure(p_ivot, tag, structureColor, labelStyle) =>
+    var line l_ine   = line.new(na, na, na, na, xloc=xloc.bar_time)
+    var label l_abel = label.new(na, na)
+
+    l_ine  := line.new(chart.point.new(p_ivot.barTime, na, p_ivot.currentLevel), chart.point.new(time, na, p_ivot.currentLevel), xloc.bar_time, color=structureColor, style=line.style_dashed)
+    l_abel := label.new(chart.point.new(na, math.round(0.5*(p_ivot.barIndex + bar_index)), p_ivot.currentLevel), tag, xloc.bar_index, color=color(na), textcolor=structureColor, style=labelStyle, size=smc_labelSize())
+
+smc_storeOrderBlock(p_ivot, bias) =>
+    if smcShowInternalOB
+        array<float> a_rray = na
+        int parsedIndex = na
+        if bias == SMC_BEARISH
+            a_rray      := smcParsedHighs.slice(p_ivot.barIndex, bar_index)
+            parsedIndex := p_ivot.barIndex + a_rray.indexof(a_rray.max())
+        else
+            a_rray      := smcParsedLows.slice(p_ivot.barIndex, bar_index)
+            parsedIndex := p_ivot.barIndex + a_rray.indexof(a_rray.min())
+
+        smcOrderBlock o_b = smcOrderBlock.new(smcParsedHighs.get(parsedIndex), smcParsedLows.get(parsedIndex), smcTimes.get(parsedIndex), bias)
+        if smcInternalOrderBlocks.size() >= 100
+            smcInternalOrderBlocks.pop()
+        smcInternalOrderBlocks.unshift(o_b)
+
+smc_deleteOrderBlocks() =>
+    for [smcIdx, smcEachOB] in smcInternalOrderBlocks
+        bool crossedOB = false
+        if smcBearishOBMitigationSource > smcEachOB.barHigh and smcEachOB.bias == SMC_BEARISH
+            crossedOB := true
+        else if smcBullishOBMitigationSource < smcEachOB.barLow and smcEachOB.bias == SMC_BULLISH
+            crossedOB := true
+        if crossedOB
+            smcInternalOrderBlocks.remove(smcIdx)
+
+smc_drawOrderBlocks() =>
+    obSize = smcInternalOrderBlocks.size()
+    if obSize > 0
+        parsedOBs = smcInternalOrderBlocks.slice(0, math.min(smcInternalOBCount, obSize))
+        for [smcIdx, smcEachOB] in parsedOBs
+            obColor = smcEachOB.bias == SMC_BEARISH ? smcInternalBearOBColor : smcInternalBullOBColor
+            b_ox = smcInternalOrderBlocksBoxes.get(smcIdx)
+            b_ox.set_top_left_point(chart.point.new(smcEachOB.barTime, na, smcEachOB.barHigh))
+            b_ox.set_bottom_right_point(chart.point.new(last_bar_time, na, smcEachOB.barLow))
+            b_ox.set_border_color(na)
+            b_ox.set_bgcolor(obColor)
+
+smc_displayInternalStructure() =>
+    var bullishBar = true
+    var bearishBar = true
+    if smcInternalFilterConfluence
+        bullishBar := high - math.max(close, open) > math.min(close, open - low)
+        bearishBar := high - math.max(close, open) < math.min(close, open - low)
+
+    if ta.crossover(close, smcInternalHigh.currentLevel) and not smcInternalHigh.crossed and bullishBar
+        string tag = smcInternalTrend.bias == SMC_BEARISH ? 'CHoCH' : 'BOS'
+        smcInternalHigh.crossed := true
+        smcInternalTrend.bias   := SMC_BULLISH
+
+        displayCond = smcShowInternals and (smcShowInternalBull == 'All' or (smcShowInternalBull == 'BOS' and tag != 'CHoCH') or (smcShowInternalBull == 'CHoCH' and tag == 'CHoCH'))
+        if displayCond
+            smc_drawStructure(smcInternalHigh, tag, smcInternalBullColor, label.style_label_down)
+
+        if smcShowInternalOB
+            smc_storeOrderBlock(smcInternalHigh, SMC_BULLISH)
+
+    if ta.crossunder(close, smcInternalLow.currentLevel) and not smcInternalLow.crossed and bearishBar
+        string tag = smcInternalTrend.bias == SMC_BULLISH ? 'CHoCH' : 'BOS'
+        smcInternalLow.crossed := true
+        smcInternalTrend.bias  := SMC_BEARISH
+
+        displayCond = smcShowInternals and (smcShowInternalBear == 'All' or (smcShowInternalBear == 'BOS' and tag != 'CHoCH') or (smcShowInternalBear == 'CHoCH' and tag == 'CHoCH'))
+        if displayCond
+            smc_drawStructure(smcInternalLow, tag, smcInternalBearColor, label.style_label_up)
+
+        if smcShowInternalOB
+            smc_storeOrderBlock(smcInternalLow, SMC_BEARISH)
+
+smc_getInternalStructure(smcInternalPivotLen)
+smc_displayInternalStructure()
+
+if smcShowInternalOB
+    smc_deleteOrderBlocks()
+
+if barstate.islastconfirmedhistory or barstate.islast
+    if smcShowInternalOB
+        smc_drawOrderBlocks()
+
+//=================================================================================
+// End SMC Internal Structure block
+//=================================================================================
+
+// ── Liquidity sweep confluence (simplified, drives entries) ──
+sweepLen = input.int(14, "Pivot Lookback", group="Confluence Logic")
+ph = ta.pivothigh(sweepLen, sweepLen)
+pl = ta.pivotlow(sweepLen, sweepLen)
+
+var float lastSwingHigh = na
+var float lastSwingLow  = na
+if not na(ph)
+    lastSwingHigh := ph
+if not na(pl)
+    lastSwingLow := pl
+
+sweepLow  = not na(lastSwingLow)  and low  < lastSwingLow  and close > lastSwingLow
+sweepHigh = not na(lastSwingHigh) and high > lastSwingHigh and close < lastSwingHigh
+
+// ── Break of structure (SMC concept) ──
+bullBOS = not na(lastSwingHigh) and ta.crossover(close, lastSwingHigh)
+bearBOS = not na(lastSwingLow)  and ta.crossunder(close, lastSwingLow)
+
+// ── Confluence toggles ──
+useSweep     = input.bool(true,  "Require Liquidity Sweep", group="Confluence Logic")
+useBOS       = input.bool(false, "Require Fresh BOS",       group="Confluence Logic")
+sweepRecency = input.int(10, "Sweep Recency (bars)",        group="Confluence Logic")
+
+recentSweepLow  = ta.barssince(sweepLow)  <= sweepRecency
+recentSweepHigh = ta.barssince(sweepHigh) <= sweepRecency
+recentBullBOS   = bullBOS[0] or bullBOS[1] or bullBOS[2]
+recentBearBOS   = bearBOS[0] or bearBOS[1] or bearBOS[2]
+
+// ── Risk ──
+atrLen      = input.int(14,    "ATR Length",           group="Risk")
+stopMult    = input.float(1.7, "Stop ATR Mult",        group="Risk")
+atrVal      = ta.atr(atrLen)
+
+//=================================================================================
+// MULTI TAKE-PROFIT — each unit of quantity gets its own TP at a different
+// ATR multiple, all sharing the same stop loss. Set quantity 1-5 and configure
+// each TP level independently.
+//=================================================================================
+qtyPerTrade = input.int(1,     "Quantity Per Trade",   group="Multi Take-Profit", minval=1, maxval=5, tooltip="Number of contracts per entry. Each contract gets its own TP level.")
+tp1Mult     = input.float(3.1, "TP 1 ATR Mult",       group="Multi Take-Profit", tooltip="Take-profit for the 1st contract (always active)")
+tp2Mult     = input.float(5.0, "TP 2 ATR Mult",       group="Multi Take-Profit", tooltip="Take-profit for the 2nd contract (active when qty >= 2)")
+tp3Mult     = input.float(7.0, "TP 3 ATR Mult",       group="Multi Take-Profit", tooltip="Take-profit for the 3rd contract (active when qty >= 3)")
+tp4Mult     = input.float(9.0, "TP 4 ATR Mult",       group="Multi Take-Profit", tooltip="Take-profit for the 4th contract (active when qty >= 4)")
+tp5Mult     = input.float(11.0,"TP 5 ATR Mult",       group="Multi Take-Profit", tooltip="Take-profit for the 5th contract (active when qty >= 5)")
+
+//=================================================================================
+// TRADE QUALITY FILTERS — toggle each on/off to isolate bad trades
+// Turn them all ON one at a time and re-run backtest to see which improves stats
+//=================================================================================
+
+// ── 1. Session filter: only trade during specific hours (UTC) ──
+useSession    = input.bool(false, "Session Filter",        group="Quality Filters")
+sessionStart  = input.int(0,  "Session Start Hour (UTC)", group="Quality Filters", minval=0, maxval=23)
+sessionEnd    = input.int(23, "Session End Hour (UTC)",   group="Quality Filters", minval=0, maxval=23)
+currentHour   = hour(time, "UTC")
+inSession     = not useSession or (currentHour >= sessionStart and currentHour < sessionEnd)
+
+// ── 2. EMA separation: skip crosses where 50/100 are too close together ──
+useEMASep     = input.bool(false, "EMA Separation Filter",   group="Quality Filters")
+emaSepMin     = input.float(0.05, "Min 50/100 Sep (% price)", group="Quality Filters", step=0.01)
+emaSepPct     = math.abs(ema50 - ema100) / ema100 * 100
+emaSepOK      = not useEMASep or emaSepPct >= emaSepMin
+
+// ── 3. ATR volatility filter: skip during abnormally low or high volatility ──
+useVolFilter  = input.bool(false, "Volatility Filter",        group="Quality Filters")
+atrMaLen      = input.int(50, "ATR MA Length",               group="Quality Filters")
+atrMinMult    = input.float(0.5, "Min ATR (x avg)",          group="Quality Filters", step=0.1)
+atrMaxMult    = input.float(2.5, "Max ATR (x avg)",          group="Quality Filters", step=0.1)
+atrMa         = ta.sma(atrVal, atrMaLen)
+volOK         = not useVolFilter or (atrVal >= atrMa * atrMinMult and atrVal <= atrMa * atrMaxMult)
+
+// ── 4. SMC internal trend alignment: only long if SMC says bullish, short if bearish ──
+useSMCAlign   = input.bool(false, "SMC Trend Alignment Filter", group="Quality Filters")
+smcLongOK     = not useSMCAlign or smcInternalTrend.bias == SMC_BULLISH
+smcShortOK    = not useSMCAlign or smcInternalTrend.bias == SMC_BEARISH
+
+// ── 5. 20 EMA slope: skip if 20 EMA is flat (directionless market) ──
+useEMASlope   = input.bool(false, "20 EMA Slope Filter",      group="Quality Filters")
+emaSlopeLen   = input.int(3, "Slope Lookback (bars)",         group="Quality Filters")
+emaSlopeMin   = input.float(0.01, "Min Slope (% per bar)",    group="Quality Filters", step=0.005)
+emaSlope      = math.abs(ema20 - ema20[emaSlopeLen]) / ema20[emaSlopeLen] * 100 / emaSlopeLen
+emaSlopeOK    = not useEMASlope or emaSlope >= emaSlopeMin
+
+// ── 6. No counter-trend: skip if price is on the wrong side of all 3 EMAs ──
+useEMAStack   = input.bool(false, "EMA Stack Filter",         group="Quality Filters")
+emaStackLong  = not useEMAStack or (close > ema20 and ema20 > ema50)
+emaStackShort = not useEMAStack or (close < ema20 and ema20 < ema50)
+
+//=================================================================================
+// COMBINED SIGNAL CONDITIONS
+//=================================================================================
+qualityFilters  = inWindow and inSession and emaSepOK and volOK and emaSlopeOK
+
+longCond  = qualityFilters and crossBull and dirUp   and smcLongOK  and emaStackLong  and (not useSweep or recentSweepLow)  and (not useBOS or recentBullBOS)
+shortCond = qualityFilters and crossBear and dirDown and smcShortOK and emaStackShort and (not useSweep or recentSweepHigh) and (not useBOS or recentBearBOS)
+
+// ── Compute SL and all TP levels ──
+longStop  = close - atrVal * stopMult
+shortStop = close + atrVal * stopMult
+
+longTp1   = close + atrVal * tp1Mult
+longTp2   = close + atrVal * tp2Mult
+longTp3   = close + atrVal * tp3Mult
+longTp4   = close + atrVal * tp4Mult
+longTp5   = close + atrVal * tp5Mult
+
+shortTp1  = close - atrVal * tp1Mult
+shortTp2  = close - atrVal * tp2Mult
+shortTp3  = close - atrVal * tp3Mult
+shortTp4  = close - atrVal * tp4Mult
+shortTp5  = close - atrVal * tp5Mult
+
+//=================================================================================
+// ENTRIES & EXITS — each contract gets its own exit with a unique TP target
+// but the same stop loss. When TP1 is hit, 1 contract closes in profit while
+// the rest stay open with their own TP targets and the shared stop.
+//=================================================================================
+if longCond
+    strategy.entry("Long", strategy.long, qty=qtyPerTrade)
+    strategy.exit("Long TP1", "Long", qty=1, stop=longStop, limit=longTp1)
+    if qtyPerTrade >= 2
+        strategy.exit("Long TP2", "Long", qty=1, stop=longStop, limit=longTp2)
+    if qtyPerTrade >= 3
+        strategy.exit("Long TP3", "Long", qty=1, stop=longStop, limit=longTp3)
+    if qtyPerTrade >= 4
+        strategy.exit("Long TP4", "Long", qty=1, stop=longStop, limit=longTp4)
+    if qtyPerTrade >= 5
+        strategy.exit("Long TP5", "Long", qty=1, stop=longStop, limit=longTp5)
+
+if shortCond
+    strategy.entry("Short", strategy.short, qty=qtyPerTrade)
+    strategy.exit("Short TP1", "Short", qty=1, stop=shortStop, limit=shortTp1)
+    if qtyPerTrade >= 2
+        strategy.exit("Short TP2", "Short", qty=1, stop=shortStop, limit=shortTp2)
+    if qtyPerTrade >= 3
+        strategy.exit("Short TP3", "Short", qty=1, stop=shortStop, limit=shortTp3)
+    if qtyPerTrade >= 4
+        strategy.exit("Short TP4", "Short", qty=1, stop=shortStop, limit=shortTp4)
+    if qtyPerTrade >= 5
+        strategy.exit("Short TP5", "Short", qty=1, stop=shortStop, limit=shortTp5)
+
+// ── Plots ──
+plotshape(longCond,  "Long Signal",  shape.triangleup,   location.belowbar, color.lime,   size=size.small)
+plotshape(shortCond, "Short Signal", shape.triangledown, location.abovebar, color.red,    size=size.small)
+bgcolor(dirUp ? color.new(color.green, 92) : color.new(color.red, 92))
+
+// ── Stop loss plots (same for all contracts) ──
+plot(longCond  ? longStop  : na, "Long SL",  style=plot.style_circles, color=color.red,  linewidth=2)
+plot(shortCond ? shortStop : na, "Short SL", style=plot.style_circles, color=color.red,  linewidth=2)
+
+// ── Take profit plots — one per level, only shown when qty is high enough ──
+plot(longCond                       ? longTp1  : na, "Long TP1",  style=plot.style_circles, color=color.lime,    linewidth=2)
+plot(longCond  and qtyPerTrade >= 2 ? longTp2  : na, "Long TP2",  style=plot.style_circles, color=color.green,   linewidth=2)
+plot(longCond  and qtyPerTrade >= 3 ? longTp3  : na, "Long TP3",  style=plot.style_circles, color=color.teal,    linewidth=2)
+plot(longCond  and qtyPerTrade >= 4 ? longTp4  : na, "Long TP4",  style=plot.style_circles, color=color.aqua,    linewidth=2)
+plot(longCond  and qtyPerTrade >= 5 ? longTp5  : na, "Long TP5",  style=plot.style_circles, color=color.blue,    linewidth=2)
+
+plot(shortCond                       ? shortTp1 : na, "Short TP1", style=plot.style_circles, color=color.lime,    linewidth=2)
+plot(shortCond and qtyPerTrade >= 2  ? shortTp2 : na, "Short TP2", style=plot.style_circles, color=color.green,   linewidth=2)
+plot(shortCond and qtyPerTrade >= 3  ? shortTp3 : na, "Short TP3", style=plot.style_circles, color=color.teal,    linewidth=2)
+plot(shortCond and qtyPerTrade >= 4  ? shortTp4 : na, "Short TP4", style=plot.style_circles, color=color.aqua,    linewidth=2)
+plot(shortCond and qtyPerTrade >= 5  ? shortTp5 : na, "Short TP5", style=plot.style_circles, color=color.blue,    linewidth=2)
+
+alertcondition(longCond,  "Long Signal",  "50/100 bull cross + filters passed — Long")
+alertcondition(shortCond, "Short Signal", "50/100 bear cross + filters passed — Short")
