@@ -15,3 +15,4 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+live_state.json

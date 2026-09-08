@@ -183,6 +183,50 @@ ff-elite-bots/
 
 ---
 
+## Live Trading — Pine Strategy → Tradovate
+
+`live_trader.py` ports the TradingView Pine strategy **"50/100 Cross + 20 EMA Direction + Structure"** to Python (`pine_strategy.py`) and routes its signals to a real Tradovate account via REST (`tradovate.py`). Each entry submits one OSO bracket per contract — every contract gets its own take-profit at a different ATR multiple, all sharing one stop — exactly like the Pine multi-TP model.
+
+```bash
+# Window 3 — dry run (default, nothing is sent to Tradovate)
+TRADOVATE_DRY_RUN=1 python live_trader.py
+```
+
+Status dashboard and webhook listener run at `http://localhost:7434`.
+
+### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `TRADOVATE_ENV` | `demo` | `demo` or `live` API endpoint |
+| `TRADOVATE_DRY_RUN` | `1` | `1` = log payloads only, `0` = place real orders |
+| `TRADOVATE_USERNAME` | — | Tradovate username |
+| `TRADOVATE_PASSWORD` | — | Tradovate password |
+| `TRADOVATE_APP_ID` | `FFEliteBots` | App ID from Tradovate API access settings |
+| `TRADOVATE_APP_VERSION` | `1.0` | App version |
+| `TRADOVATE_CID` | — | API key CID |
+| `TRADOVATE_SECRET` | — | API key secret |
+| `TRADOVATE_DEVICE_ID` | uuid5(hostname) | Device ID |
+| `TRADOVATE_ACCOUNT_ID` | first account | Numeric account ID to trade |
+| `TRADOVATE_SYMBOL_ES` (also `MES`,`NQ`,`MNQ`) | auto | Contract symbol (e.g. `ESZ5`); empty = resolve front month via `/contract/suggest` |
+| `WEBHOOK_TOKEN` | unset (disabled) | Shared secret required on TradingView webhook alerts |
+
+### TradingView webhook
+
+Add an alert on the strategy with webhook URL `http://<host>:7434/webhook` and a JSON message like:
+
+```json
+{"token": "YOUR_WEBHOOK_TOKEN", "code": "ES", "action": "long", "qty": 2}
+```
+
+`action` may be `long`, `short`, or `flat`. `stop` and `tps` are optional — when omitted they are computed from the latest candles using the strategy's ATR levels. `GET /api/status` returns JSON state.
+
+### ⚠️ Real-money warning
+
+`TRADOVATE_DRY_RUN=0` combined with `TRADOVATE_ENV=live` **places real orders with real money**. Test thoroughly on `demo` first. Market orders and bracket exits are submitted automatically on every strategy signal — there is no confirmation step.
+
+---
+
 ## Disclaimer
 
 This software is for **educational and paper trading purposes only**.  
