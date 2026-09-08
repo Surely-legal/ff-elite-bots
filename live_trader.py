@@ -106,7 +106,8 @@ class LiveTrader:
 
     def _mkt(self, code):
         return self.markets.setdefault(code, {
-            "position": None, "last_bar_t": 0, "last_signal": None, "orders": []})
+            "position": None, "last_bar_t": 0, "last_signal": None,
+            "orders": [], "remaining_tps": []})
 
     # ── symbol resolution ──
 
@@ -145,10 +146,16 @@ class LiveTrader:
             for p in positions:
                 if cid is None or p.get("contractId") == cid:
                     net += p.get("netPos", 0)
+            m = self._mkt(code)
             if net > 0:
-                self._mkt(code)["position"] = "long"
+                m["position"] = "long"
             elif net < 0:
-                self._mkt(code)["position"] = "short"
+                m["position"] = "short"
+            else:
+                if m["position"]:
+                    sp(f"  [RECONCILE] {code} flat (netPos=0)")
+                m["position"] = None
+                m["remaining_tps"] = []
         self._save_state()
 
     # ── order routing ──
@@ -168,6 +175,7 @@ class LiveTrader:
         m = self._mkt(code)
         m["position"] = None
         m["orders"] = []
+        m["remaining_tps"] = []
 
     def route_signal(self, code, result):
         """Execute an evaluate() result: Signal, 'flat', or None."""
@@ -190,6 +198,7 @@ class LiveTrader:
             sp(f"  [TRADE] {code} reversing {m['position']} -> {sig.side}")
             self._flatten(code)
         elif m["position"] == sig.side:
+            sp(f"  [TRADE] {code} already {sig.side}, signal ignored")
             return []
 
         sp(f"  [TRADE] {code} {sig.side.upper()} x{sig.qty}  entry~{sig.entry}  "
@@ -201,6 +210,7 @@ class LiveTrader:
             return []
         m["position"] = sig.side
         m["orders"] = resps
+        m["remaining_tps"] = list(sig.tps)
         m["last_signal"] = {"side": sig.side, "entry": sig.entry, "stop": sig.stop,
                             "tps": sig.tps, "qty": sig.qty, "bar_t": sig.bar_t,
                             "reason": sig.reason,
@@ -208,9 +218,45 @@ class LiveTrader:
         self._save_state()
         return resps
 
+    # ── dry-run fill simulation ──
+
+    def _simulate_fills(self, code, bar):
+        """In dry-run there is no broker state, so decide exits from the
+        stored signal levels: stop hit -> flat; every TP filled -> flat."""
+        m = self._mkt(code)
+        sig = m.get("last_signal")
+        if not m["position"] or not sig:
+            return
+        stop = sig.get("stop")
+        tps = m.get("remaining_tps") or list(sig.get("tps") or [])
+        if stop is None:
+            return
+        if m["position"] == "long":
+            if bar["l"] <= stop:
+                sp(f"  [SIM-FILL] {code} LONG stopped @ {stop}")
+                m["position"] = None
+                m["remaining_tps"] = []
+                return
+            tps = [tp for tp in tps if bar["h"] < tp]
+        else:
+            if bar["h"] >= stop:
+                sp(f"  [SIM-FILL] {code} SHORT stopped @ {stop}")
+                m["position"] = None
+                m["remaining_tps"] = []
+                return
+            tps = [tp for tp in tps if bar["l"] > tp]
+        filled = (m.get("remaining_tps") or sig.get("tps") or [])
+        if len(tps) < len(filled):
+            sp(f"  [SIM-FILL] {code} TP filled, {len(tps)} remaining")
+        m["remaining_tps"] = tps
+        if not tps:
+            sp(f"  [SIM-FILL] {code} all TPs filled -> flat")
+            m["position"] = None
+
     # ── poll loop ──
 
     def poll_once(self):
+        reconciled = False
         for code, enabled in MARKET_ENABLED.items():
             if not enabled or code not in self.symbols:
                 continue
@@ -226,6 +272,14 @@ class LiveTrader:
             if closed["t"] == m["last_bar_t"]:
                 continue
             m["last_bar_t"] = closed["t"]
+            # refresh position state before evaluating so a closed bracket
+            # lets the strategy re-enter like Pine's isFlat
+            if m["position"]:
+                if self.client.cfg.dry_run:
+                    self._simulate_fills(code, closed)
+                elif not reconciled:
+                    self.reconcile_positions()
+                    reconciled = True
             try:
                 result = ps.evaluate(bars[:-1], self.cfg, m["position"])
             except Exception as e:

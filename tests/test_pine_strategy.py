@@ -111,6 +111,30 @@ class TestEvaluate(unittest.TestCase):
         idx, sig = find_signal(closes, cfg2, position="long")
         self.assertEqual(sig, "flat")
 
+    def test_smc_bias_v_shape(self):
+        # decline, rally, small pullback, rally higher: the pullback makes the
+        # prior rally peak a new internal high; the final rally crosses it -> +1
+        closes = [6000 - i * 3.0 for i in range(40)]
+        p = closes[-1]
+        closes += [p + i * 3.0 for i in range(1, 41)]
+        p = closes[-1]
+        closes += [p - i * 2.0 for i in range(1, 8)]
+        p = closes[-1]
+        closes += [p + i * 3.0 for i in range(1, 41)]
+        bias = ps._smc_bias_series(make_bars(closes), 5)
+        self.assertEqual(bias[-1], 1)
+
+    def test_smc_bias_inverted_v(self):
+        closes = [5000 + i * 3.0 for i in range(40)]
+        p = closes[-1]
+        closes += [p - i * 3.0 for i in range(1, 41)]
+        p = closes[-1]
+        closes += [p + i * 2.0 for i in range(1, 8)]
+        p = closes[-1]
+        closes += [p - i * 3.0 for i in range(1, 41)]
+        bias = ps._smc_bias_series(make_bars(closes), 5)
+        self.assertEqual(bias[-1], -1)
+
     def test_too_few_bars(self):
         bars = make_bars([100.0] * 50)
         self.assertIsNone(ps.evaluate(bars, ps.PineConfig()))

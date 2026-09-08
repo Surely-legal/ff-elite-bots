@@ -151,6 +151,55 @@ class TestDryRun(unittest.TestCase):
         self.assertTrue(all(r.get("dryRun") for r in resps))
 
 
+class TestSimulateFills(unittest.TestCase):
+    def _trader(self):
+        cfg = tradovate.TradovateConfig(dry_run=True)
+        import tempfile
+        td = tempfile.mkdtemp()
+        return live_trader.LiveTrader(
+            tradovate.TradovateClient(cfg),
+            state_file=os.path.join(td, "state.json"))
+
+    def _open_long(self, trader):
+        m = trader._mkt("ES")
+        m["position"] = "long"
+        m["last_signal"] = {"side": "long", "entry": 6000.0,
+                            "stop": 5950.0, "tps": [6100.0, 6150.0]}
+        m["remaining_tps"] = [6100.0, 6150.0]
+        return m
+
+    def bar(self, h, l, c=None):
+        c = c if c is not None else (h + l) / 2
+        return {"t": 1, "o": c, "h": h, "l": l, "c": c, "v": 1}
+
+    def test_long_stop_hit_goes_flat(self):
+        t = self._trader()
+        m = self._open_long(t)
+        t._simulate_fills("ES", self.bar(6010, 5940))
+        self.assertIsNone(m["position"])
+        self.assertEqual(m["remaining_tps"], [])
+
+    def test_long_all_tps_flat(self):
+        t = self._trader()
+        m = self._open_long(t)
+        t._simulate_fills("ES", self.bar(6120, 5990))   # fills TP1 only
+        self.assertEqual(m["position"], "long")
+        self.assertEqual(m["remaining_tps"], [6150.0])
+        t._simulate_fills("ES", self.bar(6160, 5990))   # fills TP2
+        self.assertIsNone(m["position"])
+        self.assertEqual(m["remaining_tps"], [])
+
+    def test_long_partial_tp_stays_long(self):
+        t = self._trader()
+        m = self._open_long(t)
+        t._simulate_fills("ES", self.bar(6050, 5990))   # no fills
+        self.assertEqual(m["position"], "long")
+        self.assertEqual(m["remaining_tps"], [6100.0, 6150.0])
+        t._simulate_fills("ES", self.bar(6110, 5990))   # TP1 only
+        self.assertEqual(m["position"], "long")
+        self.assertEqual(m["remaining_tps"], [6150.0])
+
+
 class _FakeTrader:
     def __init__(self):
         self.cfg = ps.PineConfig()

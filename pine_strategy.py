@@ -169,9 +169,9 @@ def _smc_bias_series(bars, size):
         if i >= size:
             # newLegHigh: high[size] > highest of the `size` bars after it
             if highs[i - size] > max(highs[i - size + 1:i + 1]):
-                new_leg = 1  # SMC_BEARISH_LEG
+                new_leg = 0  # SMC_BEARISH_LEG
             elif lows[i - size] < min(lows[i - size + 1:i + 1]):
-                new_leg = 0  # SMC_BULLISH_LEG
+                new_leg = 1  # SMC_BULLISH_LEG
         leg[i] = new_leg
         prev = new_leg
 
